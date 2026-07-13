@@ -1,2 +1,3 @@
 Rekonstruktion und Hash-Prüfung für SoilCoverScan v6.21 auslösen.
 Synchronisierungsereignis für Pull Request #1.
+Ausführung über pull_request_target.
