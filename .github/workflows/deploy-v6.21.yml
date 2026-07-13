@@ -1,22 +1,31 @@
 name: Deploy SoilCoverScan v6.21
 
 on:
-  push:
+  pull_request:
     branches:
       - main
+    types:
+      - opened
+      - reopened
+      - synchronize
     paths:
-      - .github/workflows/deploy-v6.21.yml
+      - .deploy/trigger-v6.21
   workflow_dispatch:
 
 permissions:
   contents: write
+  pull-requests: write
 
 jobs:
   deploy:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
-      - name: Repository auschecken
+      - name: Arbeitsbranch auschecken
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
 
       - name: SoilCoverScan v6.21 rekonstruieren und prüfen
         shell: bash
@@ -27,16 +36,16 @@ jobs:
           echo "614be8a389b38c775556ddcd90c1423d63367bec46c10a3b40f49f430833be0b  index.html" | sha256sum --check -
           grep -Fq 'const APP_VERSION = "v6.21";' index.html
 
-      - name: Aktualisierung committen
+      - name: Geprüfte Version committen
         shell: bash
+        env:
+          HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
         run: |
           set -euo pipefail
-          rm -f .deploy/v6.21.part*
+          rm -f .deploy/v6.21.part* .deploy/trigger-v6.21
           rmdir .deploy 2>/dev/null || true
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
           git commit -m "Release SoilCoverScan v6.21"
-          git push
-
-# Trigger: vollständige Nutzdatei liegt bereit.
+          git push origin "HEAD:${HEAD_BRANCH}"
