@@ -4,6 +4,10 @@ on:
   push:
     branches:
       - main
+  issues:
+    types:
+      - opened
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -15,6 +19,7 @@ jobs:
       - name: Repository auschecken
         uses: actions/checkout@v4
         with:
+          ref: main
           fetch-depth: 0
 
       - name: Originaldatei als index.html wiederherstellen
@@ -38,4 +43,4 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
           git commit -m "Deploy SoilCoverScan v6.21 as direct index.html"
-          git push
+          git push origin HEAD:main
