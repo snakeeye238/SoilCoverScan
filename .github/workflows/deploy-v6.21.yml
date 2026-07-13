@@ -38,3 +38,5 @@ jobs:
           git add -A
           git commit -m "Release SoilCoverScan v6.21"
           git push
+
+# Trigger: vollständige Nutzdatei liegt bereit.
