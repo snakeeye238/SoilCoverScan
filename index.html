@@ -591,6 +591,74 @@
             .calibration-settings-panel .dual-range-control { height: 44px; }
             .calibration-settings-panel .dual-range-track { top: 18px; }
             .calibration-settings-panel select, .calibration-settings-panel input[type=number] { font-size: 16px; min-height: 40px; }
+            /* 3-Phasen-Assistent: etwas mehr Platz für die Regler, Hinweise ans Kartenende, Navigation über die Schrittleiste. */
+            .calibration-shell.is-two-phase .calibration-image-panel { height: 42%; flex-basis: 42%; }
+            .two-phase-step-header { display: none; }
+            .two-phase-step-card { padding: 10px; }
+            .two-phase-step-body .two-phase-hint { order: 10; }
+            .two-phase-step-nav { display: none; }
+            .two-phase-fine-row { margin-top: 0; }
+            .two-phase-fine-row input[type=range] { min-height: 34px; }
+        }
+
+        /* 3-Phasen-Assistent */
+        .two-phase-step-body { display: flex; flex-direction: column; gap: 8px; }
+        .two-phase-suggestion-mark {
+            position: absolute;
+            top: 50%;
+            width: 12px;
+            height: 12px;
+            margin-left: -6px;
+            margin-top: -6px;
+            border: 2px solid #67e8f9;
+            border-radius: 999px;
+            box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.85);
+            pointer-events: none;
+        }
+        .two-phase-crosshair {
+            position: absolute;
+            left: 50%;
+            top: 50%;
+            width: 0;
+            height: 0;
+            z-index: 30;
+            pointer-events: none;
+        }
+        .two-phase-crosshair-line {
+            position: absolute;
+            filter: drop-shadow(0 0 1px rgba(15, 23, 42, 0.95)) drop-shadow(0 0 1px rgba(15, 23, 42, 0.95));
+        }
+        .two-phase-crosshair-line.is-horizontal {
+            width: 56px;
+            height: 2px;
+            left: -28px;
+            top: -1px;
+            background: linear-gradient(90deg, #fff 0 38%, transparent 38% 62%, #fff 62%);
+        }
+        .two-phase-crosshair-line.is-vertical {
+            width: 2px;
+            height: 56px;
+            left: -1px;
+            top: -28px;
+            background: linear-gradient(180deg, #fff 0 38%, transparent 38% 62%, #fff 62%);
+        }
+        .two-phase-crosshair-dot {
+            position: absolute;
+            width: 12px;
+            height: 12px;
+            left: -6px;
+            top: -6px;
+            border: 2px solid #d946ef;
+            border-radius: 999px;
+            box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.8);
+        }
+        .two-phase-crosshair-radius {
+            position: absolute;
+            left: 0;
+            top: 0;
+            transform: translate(-50%, -50%);
+            border: 2px dashed;
+            border-radius: 999px;
         }
     </style>
 </head>
@@ -599,7 +667,7 @@
     <div id="root"></div>
 
     <script type="text/babel">
-        const { useState, useRef, useEffect, useCallback } = React;
+        const { useState, useRef, useEffect, useCallback, useMemo } = React;
 
         // --- KONFIGURATION ---
         const API_KEY_STORAGE_KEY = 'soilcoverscan_api_key';
@@ -1589,6 +1657,269 @@
                 : (code === TWO_PHASE_CATEGORY_CODES.dead ? 'dead' : 'soil')
         );
 
+        // Vorberechnete Pixelmerkmale für die 3-Phasen-Kalibrierung. Sie hängen nur vom Bild ab,
+        // daher kostet jede Slider-Änderung danach nur noch einfache Vergleiche pro Pixel.
+        const buildTwoPhaseFeatureCache = (rgbaData, textureData, width, height, ranges) => {
+            if (!rgbaData || !width || !height || !ranges?.vegetation) return null;
+            const pixelCount = width * height;
+            const vegetation = new Float32Array(pixelCount);
+            const yellowBrown = new Float32Array(pixelCount);
+            const brightness = new Float32Array(pixelCount);
+            const vegetationRange = ranges.vegetation;
+            const yellowBrownRange = ranges.yellowBrown || [0, 1];
+
+            for (let pixelIndex = 0, sourceIndex = 0; pixelIndex < pixelCount; pixelIndex++, sourceIndex += 4) {
+                const r = rgbaData[sourceIndex];
+                const g = rgbaData[sourceIndex + 1];
+                const b = rgbaData[sourceIndex + 2];
+                const scores = getRawTwoPhaseScores(r, g, b);
+                vegetation[pixelIndex] = scaleTwoPhaseScore(scores.vegetation, vegetationRange);
+                yellowBrown[pixelIndex] = scaleTwoPhaseScore(scores.yellowOverBrown, yellowBrownRange);
+                brightness[pixelIndex] = rgbToHsv(r, g, b)[2];
+            }
+
+            return {
+                width,
+                height,
+                pixelCount,
+                ranges: { vegetation: vegetationRange, yellowBrown: yellowBrownRange },
+                vegetation,
+                yellowBrown,
+                brightness,
+                roughness: textureData?.roughness || (ArrayBuffer.isView(textureData) ? textureData : null),
+                fibrousness: textureData?.fibrousness || null
+            };
+        };
+
+        const isTwoPhaseFeatureCacheUsable = (cache, width, height, settings, fallbackRanges) => {
+            if (!cache || cache.width !== width || cache.height !== height) return false;
+            const ranges = settings?.ranges || fallbackRanges;
+            if (!ranges?.vegetation) return false;
+            const yellowBrownRange = ranges.yellowBrown || [0, 1];
+            return ranges.vegetation[0] === cache.ranges.vegetation[0] &&
+                ranges.vegetation[1] === cache.ranges.vegetation[1] &&
+                yellowBrownRange[0] === cache.ranges.yellowBrown[0] &&
+                yellowBrownRange[1] === cache.ranges.yellowBrown[1];
+        };
+
+        // Gleiche Entscheidungslogik wie getTwoPhaseCategory, nur auf den vorberechneten Merkmalen.
+        const classifyTwoPhaseFromCache = (cache, settings) => {
+            const codes = new Uint8Array(cache.pixelCount);
+            const withDefault = (key) => settings?.[key] ?? DEFAULT_TWO_PHASE_SETTINGS[key];
+            const vegetationThreshold = settings.vegetationThreshold;
+            const colorThreshold = settings.livingThreshold;
+            const colorEnabled = withDefault('colorEnabled');
+            const roughnessEnabled = withDefault('roughnessEnabled');
+            const fibrousnessEnabled = withDefault('fibrousnessEnabled');
+            const roughnessThreshold = withDefault('roughnessThreshold');
+            const fibrousnessThreshold = withDefault('fibrousnessThreshold');
+            const roughnessMatchMin = roughnessThreshold <= 0 ? Infinity : 100 - roughnessThreshold;
+            const fibrousnessMatchMin = fibrousnessThreshold <= 0 ? Infinity : 100 - fibrousnessThreshold;
+            const combinationMode =
+                settings.featureCombinationMode ??
+                settings.textureCombinationMode ??
+                DEFAULT_TWO_PHASE_SETTINGS.featureCombinationMode;
+            const activeFeatureCount =
+                (colorEnabled ? 1 : 0) + (roughnessEnabled ? 1 : 0) + (fibrousnessEnabled ? 1 : 0);
+            const requiredMatches = combinationMode === 'and'
+                ? activeFeatureCount
+                : (combinationMode === 'majority' ? Math.floor(activeFeatureCount / 2) + 1 : 1);
+            const darkEnabled = withDefault('darkBrightnessEnabled');
+            const darkThreshold = withDefault('darkBrightnessThreshold');
+            const darkCode = withDefault('darkBrightnessCategory') === 'dead'
+                ? TWO_PHASE_CATEGORY_CODES.dead
+                : TWO_PHASE_CATEGORY_CODES.soil;
+            const brightEnabled = withDefault('brightBrightnessEnabled');
+            const brightThreshold = withDefault('brightBrightnessThreshold');
+            const brightCode = withDefault('brightBrightnessCategory') === 'soil'
+                ? TWO_PHASE_CATEGORY_CODES.soil
+                : TWO_PHASE_CATEGORY_CODES.dead;
+            const { vegetation, yellowBrown, brightness, roughness, fibrousness } = cache;
+
+            for (let pixelIndex = 0; pixelIndex < cache.pixelCount; pixelIndex++) {
+                if (vegetation[pixelIndex] >= vegetationThreshold) {
+                    codes[pixelIndex] = TWO_PHASE_CATEGORY_CODES.living;
+                    continue;
+                }
+
+                let code = TWO_PHASE_CATEGORY_CODES.soil;
+                if (activeFeatureCount > 0) {
+                    let matches = 0;
+                    if (colorEnabled && yellowBrown[pixelIndex] >= colorThreshold) matches++;
+                    if (roughnessEnabled && (roughness ? roughness[pixelIndex] : 0) >= roughnessMatchMin) matches++;
+                    if (fibrousnessEnabled && (fibrousness ? fibrousness[pixelIndex] : 0) >= fibrousnessMatchMin) matches++;
+                    if (matches >= requiredMatches) code = TWO_PHASE_CATEGORY_CODES.dead;
+                }
+
+                const brightnessValue = brightness[pixelIndex];
+                if (darkEnabled && brightnessValue <= darkThreshold) code = darkCode;
+                if (brightEnabled && brightnessValue >= brightThreshold) code = brightCode;
+                codes[pixelIndex] = code;
+            }
+
+            return codes;
+        };
+
+        const TWO_PHASE_HIGHLIGHT_COLOR = [34, 211, 238];
+        const TWO_PHASE_STONE_CODE = 4;
+
+        // Zeichnet die 3-Phasen-Maske direkt in ImageData. "visual" steuert nur die Kalibrier-Vorschau:
+        // focus blendet Kategorien aus, highlight markiert Pixel knapp an der gerade bewegten Schwelle.
+        const renderTwoPhaseOverlay = (target, codes, manualOverrides, cache, settings, visual) => {
+            const counts = { living: 0, dead: 0, stone: 0, soil: 0, unclassified: 0 };
+            // Ein Pixel = ein 32-bit-Wert (RGBA in Little-Endian-Reihenfolge), spart vier Einzel-Schreibzugriffe.
+            const pixels = new Uint32Array(target.buffer, target.byteOffset, cache.pixelCount);
+            const packColor = (r, g, b) => ((255 << 24) | (b << 16) | (g << 8) | r) >>> 0;
+            const colors = new Uint32Array(5);
+            colors[TWO_PHASE_CATEGORY_CODES.living] = packColor(34, 197, 94);
+            colors[TWO_PHASE_CATEGORY_CODES.dead] = packColor(255, 255, 0);
+            colors[TWO_PHASE_CATEGORY_CODES.soil] = packColor(
+                CALIBRATION_SOIL_MARK_COLOR.r,
+                CALIBRATION_SOIL_MARK_COLOR.g,
+                CALIBRATION_SOIL_MARK_COLOR.b
+            );
+            colors[TWO_PHASE_STONE_CODE] = packColor(59, 130, 246);
+            const highlightColor = packColor(...TWO_PHASE_HIGHLIGHT_COLOR);
+            // Ausgeblendete Kategorien werden abgedunkelt statt durchsichtig, damit das Erkannte hervorsticht.
+            const dimmedColor = packColor(15, 23, 42);
+            const hideLiving = visual?.focus === 'nonLiving';
+            const hideNonLiving = visual?.focus === 'living';
+            const highlightField = visual?.highlight?.field || null;
+            const band = visual?.highlight?.band ?? 1.5;
+            const vegetationThreshold = settings.vegetationThreshold;
+            const textureThreshold = Math.max(
+                settings.roughnessEnabled ? settings.roughnessThreshold || 0 : 0,
+                settings.fibrousnessEnabled ? settings.fibrousnessThreshold || 0 : 0
+            );
+            const highlightValue = highlightField === 'texture'
+                ? 100 - textureThreshold
+                : settings[highlightField];
+            const { vegetation, yellowBrown, brightness, roughness, fibrousness } = cache;
+
+            const isNearThreshold = (pixelIndex) => {
+                if (highlightField === 'vegetationThreshold') {
+                    return Math.abs(vegetation[pixelIndex] - highlightValue) <= band;
+                }
+                if (vegetation[pixelIndex] >= vegetationThreshold) return false;
+                if (highlightField === 'livingThreshold') {
+                    return Math.abs(yellowBrown[pixelIndex] - highlightValue) <= band;
+                }
+                if (highlightField === 'texture') {
+                    if (textureThreshold <= 0) return false;
+                    return (roughness && Math.abs(roughness[pixelIndex] - highlightValue) <= band) ||
+                        (fibrousness && Math.abs(fibrousness[pixelIndex] - highlightValue) <= band);
+                }
+                if (highlightField === 'darkBrightnessThreshold' || highlightField === 'brightBrightnessThreshold') {
+                    return Math.abs(brightness[pixelIndex] - highlightValue) <= band;
+                }
+                return false;
+            };
+
+            for (let pixelIndex = 0; pixelIndex < cache.pixelCount; pixelIndex++) {
+                const manualValue = manualOverrides ? manualOverrides[pixelIndex] : 0;
+                let code;
+                if (manualValue) {
+                    code = manualValue === 1
+                        ? TWO_PHASE_CATEGORY_CODES.living
+                        : (manualValue === 2
+                            ? TWO_PHASE_CATEGORY_CODES.dead
+                            : (manualValue === 3 ? TWO_PHASE_STONE_CODE : TWO_PHASE_CATEGORY_CODES.soil));
+                } else {
+                    code = codes[pixelIndex];
+                }
+
+                if (code === TWO_PHASE_CATEGORY_CODES.living) counts.living++;
+                else if (code === TWO_PHASE_CATEGORY_CODES.dead) counts.dead++;
+                else if (code === TWO_PHASE_STONE_CODE) counts.stone++;
+                else counts.soil++;
+
+                if (highlightField && !manualValue && isNearThreshold(pixelIndex)) {
+                    pixels[pixelIndex] = highlightColor;
+                    continue;
+                }
+
+                const isLiving = code === TWO_PHASE_CATEGORY_CODES.living;
+                pixels[pixelIndex] = (hideLiving && isLiving) || (hideNonLiving && !isLiving) ? dimmedColor : colors[code];
+            }
+
+            return counts;
+        };
+
+        // Otsu-Schwelle auf 0–100-Scores: trennt zwei Pixelgruppen mit maximaler Zwischenklassen-Varianz.
+        const getOtsuThreshold = (values, binCount = 200) => {
+            if (!values?.length) return null;
+            const bins = new Float64Array(binCount);
+            for (let index = 0; index < values.length; index++) {
+                const bin = Math.min(binCount - 1, Math.max(0, Math.floor((values[index] / 100) * binCount)));
+                bins[bin]++;
+            }
+
+            const total = values.length;
+            let weightedTotal = 0;
+            for (let bin = 0; bin < binCount; bin++) weightedTotal += bin * bins[bin];
+
+            let backgroundWeight = 0;
+            let backgroundSum = 0;
+            let bestVariance = -1;
+            let bestBin = null;
+            for (let bin = 0; bin < binCount - 1; bin++) {
+                backgroundWeight += bins[bin];
+                backgroundSum += bin * bins[bin];
+                const foregroundWeight = total - backgroundWeight;
+                if (backgroundWeight === 0 || foregroundWeight === 0) continue;
+                const backgroundMean = backgroundSum / backgroundWeight;
+                const foregroundMean = (weightedTotal - backgroundSum) / foregroundWeight;
+                const variance = backgroundWeight * foregroundWeight * (backgroundMean - foregroundMean) ** 2;
+                if (variance > bestVariance) {
+                    bestVariance = variance;
+                    bestBin = bin;
+                }
+            }
+
+            if (bestBin === null) return null;
+            return Math.round(((bestBin + 1) / binCount) * 1000) / 10;
+        };
+
+        // Startwerte für den Slider-Assistenten: Lebend-Schwelle aus allen Stichproben,
+        // Gelb/Braun-Schwelle nur aus den Stichproben unterhalb der (aktuellen) Lebend-Schwelle.
+        const getTwoPhaseSuggestedThresholds = (model, vegetationThreshold = null) => {
+            if (!model?.sampleCount) return null;
+            const vegetationSuggestion = getOtsuThreshold(model.vegetationScores);
+            const suggestedVegetation = vegetationSuggestion === null
+                ? null
+                : getClampedValue(vegetationSuggestion, 1, 99);
+            const effectiveVegetation =
+                vegetationThreshold ?? suggestedVegetation ?? DEFAULT_TWO_PHASE_SETTINGS.vegetationThreshold;
+            const nonLivingScores = [];
+            for (let index = 0; index < model.sampleCount; index++) {
+                if (model.vegetationScores[index] < effectiveVegetation) {
+                    nonLivingScores.push(model.yellowBrownScores[index]);
+                }
+            }
+            const deadSuggestion = getOtsuThreshold(nonLivingScores);
+            return {
+                vegetationThreshold: suggestedVegetation,
+                livingThreshold: deadSuggestion === null ? null : getClampedValue(deadSuggestion, 0, 100)
+            };
+        };
+
+        const TWO_PHASE_ASSIST_STEPS = [
+            { id: 'living', short: 'Lebend', title: 'Lebende Pflanzen erkennen', focus: 'living' },
+            { id: 'dead', short: 'Gelb/Braun', title: 'Abgestorben von Boden trennen', focus: 'nonLiving' },
+            { id: 'texture', short: 'Struktur', title: 'Stroh über Struktur ergänzen', focus: 'nonLiving' },
+            { id: 'light', short: 'Licht', title: 'Schatten & Glanz zuordnen', focus: 'nonLiving' },
+            { id: 'gaps', short: 'Lücken', title: 'Lücken schließen', focus: null },
+            { id: 'fix', short: 'Korrektur', title: 'Stelle mit Fadenkreuz korrigieren', focus: null }
+        ];
+        const TWO_PHASE_FIX_SLIDER_MAX = 100;
+        const TWO_PHASE_NUMBER_FORMAT_0 = new Intl.NumberFormat('de-DE', { maximumFractionDigits: 0 });
+        const TWO_PHASE_NUMBER_FORMAT_1 = new Intl.NumberFormat('de-DE', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+        // Quadratische Zuordnung: kleine Auslenkungen = sehr kleine Bereiche, volle Auslenkung = 25 % der Bilddiagonale.
+        const getTwoPhaseFixTolerance = (sliderValue) => {
+            const magnitude = getClampedValue(Math.abs(Number(sliderValue) || 0) / TWO_PHASE_FIX_SLIDER_MAX, 0, 1);
+            return Math.round(magnitude * magnitude * 25 * 100) / 100;
+        };
+
 
         const applyTwoPhaseGapClosing = (
             sourceCodes,
@@ -1718,15 +2049,17 @@
             settings,
             fallbackRanges,
             refinementPoints,
-            smoothingSettings = null
+            smoothingSettings = null,
+            precomputedBaseCodes = null
         ) => {
             const pixelCount = Math.max(0, width * height);
-            const baseCodes = new Uint8Array(pixelCount);
+            const hasPrecomputedBaseCodes = precomputedBaseCodes?.length === pixelCount;
+            const baseCodes = hasPrecomputedBaseCodes ? precomputedBaseCodes : new Uint8Array(pixelCount);
             const overrideCodes = new Uint8Array(pixelCount);
             if (!rgbaData || !pixelCount) return { baseCodes, overrideCodes };
 
             // Ausgangsklassifizierung ausschließlich aus Phase 1 + Phase 2.
-            for (let pixelIndex = 0, sourceIndex = 0; pixelIndex < pixelCount; pixelIndex++, sourceIndex += 4) {
+            for (let pixelIndex = 0, sourceIndex = 0; !hasPrecomputedBaseCodes && pixelIndex < pixelCount; pixelIndex++, sourceIndex += 4) {
                 const roughnessValue = textureData?.roughness
                     ? textureData.roughness[pixelIndex]
                     : (textureData ? textureData[pixelIndex] : null);
@@ -1856,7 +2189,10 @@
 
             for (let index = 0; index < bins.length; index++) {
                 const value = (index + 0.5) * 2.5;
-                const barHeight = Math.max(1, (bins[index] / maximum) * (height - 8));
+                // Wurzel-Skalierung, damit kleine Pixelgruppen neben einem dominanten Gipfel sichtbar bleiben.
+                const barHeight = bins[index] > 0
+                    ? Math.max(2, Math.sqrt(bins[index] / maximum) * (height - 8))
+                    : 1;
                 context.fillStyle = value < threshold ? lowerColor : upperColor;
                 context.fillRect(
                     index * barWidth + 1,
@@ -2175,6 +2511,7 @@
             const [twoPhaseSettings, setTwoPhaseSettings] = useState(() => createTwoPhaseSettings());
             const twoPhaseSettingsRef = useRef(createTwoPhaseSettings());
             const [twoPhaseModelVersion, setTwoPhaseModelVersion] = useState(0);
+            const [twoPhaseStep, setTwoPhaseStep] = useState('living');
             const [twoPhaseRefinementPoints, setTwoPhaseRefinementPoints] = useState([]);
             const twoPhaseRefinementPointsRef = useRef([]);
             const [twoPhaseSmoothing, setTwoPhaseSmoothing] = useState({
@@ -2270,6 +2607,10 @@
             const vegetationHistogramRef = useRef(null);
             const healthHistogramRef = useRef(null);
             const twoPhaseModelRef = useRef(null);
+            const twoPhaseFeatureCacheRef = useRef(null);
+            // Nur für die Kalibrier-Vorschau: { focus: 'living' | 'nonLiving' | null, highlight: { field, band } | null }
+            const twoPhaseVisualRef = useRef({ focus: null, highlight: null });
+            const [twoPhaseLiveCounts, setTwoPhaseLiveCounts] = useState(null);
             const calibrationPointersRef = useRef(new Map());
             const calibrationGestureRef = useRef({ mode: null, moved: false, didPinch: false, pinch: null });
             const modalPointersRef = useRef(new Map());
@@ -2513,6 +2854,19 @@
                     const hasTwoPhaseSmoothing =
                         activeTwoPhaseSmoothing?.category !== 'none' &&
                         Number(activeTwoPhaseSmoothing?.radius || 0) > 0;
+                    const twoPhaseFeatureCache = activeCalibrationMode === 'twoPhase' &&
+                        isTwoPhaseFeatureCacheUsable(
+                            twoPhaseFeatureCacheRef.current,
+                            width,
+                            height,
+                            activeTwoPhaseSettings,
+                            twoPhaseModelRef.current?.ranges
+                        )
+                        ? twoPhaseFeatureCacheRef.current
+                        : null;
+                    const twoPhaseBaseCodes = twoPhaseFeatureCache
+                        ? classifyTwoPhaseFromCache(twoPhaseFeatureCache, activeTwoPhaseSettings)
+                        : null;
                     const twoPhaseLocalRefinement = (
                         activeCalibrationMode === 'twoPhase' &&
                         (activeTwoPhaseRefinementPoints.length > 0 || hasTwoPhaseSmoothing)
@@ -2525,7 +2879,8 @@
                             activeTwoPhaseSettings,
                             twoPhaseModelRef.current?.ranges,
                             activeTwoPhaseRefinementPoints,
-                            activeTwoPhaseSmoothing
+                            activeTwoPhaseSmoothing,
+                            twoPhaseBaseCodes
                         )
                         : null;
                     const activeUnclassifiedFallback = configOverrides.unclassifiedFallback ?? unclassifiedFallback;
@@ -2533,106 +2888,121 @@
                     const shouldApplyStandardMaskVisibility = isPreview && isCalibrationOpen && activeCalibrationMode === 'standard';
                     const effectiveFallback = remapUnclassifiedTo || activeUnclassifiedFallback;
 
-                    for (let i = 0; i < data.length; i += 4) {
-                        let category = 'unclassified'; 
-                        const pixelIndex = i / 4;
-                        const r = data[i];
-                        const g = data[i + 1];
-                        const b = data[i + 2];
-                        const hsvIndex = pixelIndex * 3;
-                        const textureValue = textureData?.roughness
-                            ? textureData.roughness[pixelIndex]
-                            : (textureData ? textureData[pixelIndex] : null);
-                        const fibrousnessValue = textureData?.fibrousness
-                            ? textureData.fibrousness[pixelIndex]
-                            : 0;
-                        let h;
-                        let s;
-                        let v;
+                    if (twoPhaseBaseCodes) {
+                        const twoPhaseVisual = isPreview && isCalibrationOpen
+                            ? (configOverrides.twoPhaseVisual ?? twoPhaseVisualRef.current)
+                            : null;
+                        counts = renderTwoPhaseOverlay(
+                            oData,
+                            twoPhaseLocalRefinement?.finalCodes || twoPhaseBaseCodes,
+                            manualOverrides,
+                            twoPhaseFeatureCache,
+                            activeTwoPhaseSettings,
+                            twoPhaseVisual
+                        );
+                        if (isPreview) setTwoPhaseLiveCounts({ ...counts });
+                    } else {
+                        for (let i = 0; i < data.length; i += 4) {
+                            let category = 'unclassified'; 
+                            const pixelIndex = i / 4;
+                            const r = data[i];
+                            const g = data[i + 1];
+                            const b = data[i + 2];
+                            const hsvIndex = pixelIndex * 3;
+                            const textureValue = textureData?.roughness
+                                ? textureData.roughness[pixelIndex]
+                                : (textureData ? textureData[pixelIndex] : null);
+                            const fibrousnessValue = textureData?.fibrousness
+                                ? textureData.fibrousness[pixelIndex]
+                                : 0;
+                            let h;
+                            let s;
+                            let v;
 
-                        if (hsvData) {
-                            h = hsvData[hsvIndex];
-                            s = hsvData[hsvIndex + 1];
-                            v = hsvData[hsvIndex + 2];
-                        } else {
-                            [h, s, v] = rgbToHsv(r, g, b);
-                        }
+                            if (hsvData) {
+                                h = hsvData[hsvIndex];
+                                s = hsvData[hsvIndex + 1];
+                                v = hsvData[hsvIndex + 2];
+                            } else {
+                                [h, s, v] = rgbToHsv(r, g, b);
+                            }
 
-                        // 1. Check Manual Override (Brush)
-                        if (manualOverrides && manualOverrides[pixelIndex] !== 0) {
-                            const overrideVal = manualOverrides[pixelIndex];
-                            if (overrideVal === 1) category = 'living';
-                            else if (overrideVal === 2) category = 'dead';
-                            else if (overrideVal === 3) category = 'stone';
-                            else if (overrideVal === 4) category = 'soil';
-                        } else {
-                            // 2. Algorithmic Detection
-                            if (activeCalibrationMode === 'twoPhase') {
-                                if (twoPhaseLocalRefinement) {
-                                    const finalCode = twoPhaseLocalRefinement.finalCodes[pixelIndex];
-                                    category = getTwoPhaseCategoryFromCode(finalCode);
+                            // 1. Check Manual Override (Brush)
+                            if (manualOverrides && manualOverrides[pixelIndex] !== 0) {
+                                const overrideVal = manualOverrides[pixelIndex];
+                                if (overrideVal === 1) category = 'living';
+                                else if (overrideVal === 2) category = 'dead';
+                                else if (overrideVal === 3) category = 'stone';
+                                else if (overrideVal === 4) category = 'soil';
+                            } else {
+                                // 2. Algorithmic Detection
+                                if (activeCalibrationMode === 'twoPhase') {
+                                    if (twoPhaseLocalRefinement) {
+                                        const finalCode = twoPhaseLocalRefinement.finalCodes[pixelIndex];
+                                        category = getTwoPhaseCategoryFromCode(finalCode);
+                                    } else {
+                                        category = getTwoPhaseCategory(
+                                            r,
+                                            g,
+                                            b,
+                                            textureValue,
+                                            fibrousnessValue,
+                                            activeTwoPhaseSettings,
+                                            twoPhaseModelRef.current?.ranges
+                                        );
+                                    }
                                 } else {
-                                    category = getTwoPhaseCategory(
+                                    category = getPixelCategoryByCalibrationFromHsv(
                                         r,
                                         g,
                                         b,
+                                        h,
+                                        s,
+                                        v,
+                                        currentThresholds,
+                                        activeCalibrationPoints,
+                                        activeUseStandardFallback,
                                         textureValue,
-                                        fibrousnessValue,
-                                        activeTwoPhaseSettings,
-                                        twoPhaseModelRef.current?.ranges
+                                        fibrousnessValue
                                     );
-                                }
-                            } else {
-                                category = getPixelCategoryByCalibrationFromHsv(
-                                    r,
-                                    g,
-                                    b,
-                                    h,
-                                    s,
-                                    v,
-                                    currentThresholds,
-                                    activeCalibrationPoints,
-                                    activeUseStandardFallback,
-                                    textureValue,
-                                    fibrousnessValue
-                                );
 
-                                if (category === 'unclassified' && activeCalibrationMode === 'standard' && !isPreview) {
-                                    category = getForcedStandardCategory(r, g, b, currentThresholds);
+                                    if (category === 'unclassified' && activeCalibrationMode === 'standard' && !isPreview) {
+                                        category = getForcedStandardCategory(r, g, b, currentThresholds);
+                                    }
                                 }
                             }
-                        }
 
-                        // REMAP UNCLASSIFIED IF REQUESTED (Dynamic Fallback)
-                        if (category === 'unclassified' && effectiveFallback) {
-                            category = effectiveFallback;
-                        }
-
-                        counts[category]++;
-
-                        // Coloring
-                        const renderCategory = shouldApplyStandardMaskVisibility
-                            ? (activeStandardMaskVisibility[category] ? category : null)
-                            : category;
-
-                        if (!renderCategory) {
-                            oData[i + 3] = 0;
-                            continue;
-                        }
-
-                        oData[i + 3] = 255; 
-                        if (renderCategory === 'living') { oData[i] = 34; oData[i+1] = 197; oData[i+2] = 94; } // Green
-                        else if (renderCategory === 'dead') { oData[i] = 255; oData[i+1] = 255; oData[i+2] = 0; } // Yellow
-                        else if (renderCategory === 'stone') { oData[i] = 59; oData[i+1] = 130; oData[i+2] = 246; } // Blue
-                        else if (renderCategory === 'soil') { oData[i] = CALIBRATION_SOIL_MARK_COLOR.r; oData[i+1] = CALIBRATION_SOIL_MARK_COLOR.g; oData[i+2] = CALIBRATION_SOIL_MARK_COLOR.b; } // Pink
-                        else { 
-                            // Unclassified
-                            if (highlightUnclassified && isPreview) {
-                                oData[i] = 255; oData[i+1] = 0; oData[i+2] = 0; // Red
-                            } else {
-                                oData[i + 3] = 0; // Transparent
+                            // REMAP UNCLASSIFIED IF REQUESTED (Dynamic Fallback)
+                            if (category === 'unclassified' && effectiveFallback) {
+                                category = effectiveFallback;
                             }
-                        } 
+
+                            counts[category]++;
+
+                            // Coloring
+                            const renderCategory = shouldApplyStandardMaskVisibility
+                                ? (activeStandardMaskVisibility[category] ? category : null)
+                                : category;
+
+                            if (!renderCategory) {
+                                oData[i + 3] = 0;
+                                continue;
+                            }
+
+                            oData[i + 3] = 255; 
+                            if (renderCategory === 'living') { oData[i] = 34; oData[i+1] = 197; oData[i+2] = 94; } // Green
+                            else if (renderCategory === 'dead') { oData[i] = 255; oData[i+1] = 255; oData[i+2] = 0; } // Yellow
+                            else if (renderCategory === 'stone') { oData[i] = 59; oData[i+1] = 130; oData[i+2] = 246; } // Blue
+                            else if (renderCategory === 'soil') { oData[i] = CALIBRATION_SOIL_MARK_COLOR.r; oData[i+1] = CALIBRATION_SOIL_MARK_COLOR.g; oData[i+2] = CALIBRATION_SOIL_MARK_COLOR.b; } // Pink
+                            else { 
+                                // Unclassified
+                                if (highlightUnclassified && isPreview) {
+                                    oData[i] = 255; oData[i+1] = 0; oData[i+2] = 0; // Red
+                                } else {
+                                    oData[i + 3] = 0; // Transparent
+                                }
+                            } 
+                        }
                     }
 
                     overlayCtx.putImageData(overlayData, 0, 0);
@@ -2654,7 +3024,7 @@
                         {
                             source: activeCalibrationMode === 'point'
                                 ? 'Algorithm (Punkt)'
-                                : (activeCalibrationMode === 'twoPhase' ? 'Algorithm (2-Phasen)' : 'Algorithm (Color)')
+                                : (activeCalibrationMode === 'twoPhase' ? 'Algorithm (3-Phasen)' : 'Algorithm (Color)')
                         },
                         CALIBRATION_CATEGORY_KEYS
                     );
@@ -2711,6 +3081,8 @@
                 twoPhaseSettingsRef.current = nextTwoPhaseSettings;
                 setTwoPhaseSettings(nextTwoPhaseSettings);
                 twoPhaseModelRef.current = null;
+                twoPhaseFeatureCacheRef.current = null;
+                setTwoPhaseLiveCounts(null);
                 setTwoPhaseModelVersion(version => version + 1);
                 twoPhaseRefinementPointsRef.current = [];
                 setTwoPhaseRefinementPoints([]);
@@ -3025,6 +3397,13 @@
                             canvas.height
                         );
                         twoPhaseModelRef.current = nextTwoPhaseModel;
+                        twoPhaseFeatureCacheRef.current = buildTwoPhaseFeatureCache(
+                            imageDataRef.current,
+                            textureDataRef.current,
+                            canvas.width,
+                            canvas.height,
+                            nextTwoPhaseModel?.ranges
+                        );
                         const nextTwoPhaseSettings = {
                             ...twoPhaseSettingsRef.current,
                             ranges: nextTwoPhaseModel?.ranges || null
@@ -3082,7 +3461,7 @@
                     );
                 });
                 return () => window.cancelAnimationFrame(frameId);
-            }, [isCalibrationOpen, calibrationMode, twoPhaseSettings, twoPhaseModelVersion]);
+            }, [isCalibrationOpen, calibrationMode, twoPhaseSettings, twoPhaseModelVersion, twoPhaseStep, isMobileCalibration]);
 
             useEffect(() => {
                 calibrationPointsRef.current = calibrationPoints;
@@ -3301,7 +3680,7 @@
             };
 
             const setTwoPhaseRefinementTolerance = (id, value) => {
-                const parsedValue = Number.parseInt(value, 10);
+                const parsedValue = Number.parseFloat(value);
                 const safeValue = getClampedValue(Number.isNaN(parsedValue) ? 0 : parsedValue, 0, 100);
                 const nextPoints = applyTwoPhaseRefinementPoints(
                     twoPhaseRefinementPointsRef.current.map(point =>
@@ -3597,7 +3976,10 @@
                 const isMouse = event.pointerType === 'mouse';
                 const requestsMousePan = isMouse && (event.button === 1 || event.button === 2);
 
-                if (requestsMousePan || (!isMouse && !pickingCategory && !brushActive)) {
+                const requestsCrosshairPan =
+                    isMouse && event.button === 0 && isTwoPhaseCrosshairActive && !pickingCategory && !brushActive;
+
+                if (requestsMousePan || requestsCrosshairPan || (!isMouse && !pickingCategory && !brushActive)) {
                     gesture.mode = 'pan';
                     setIsPanning(true);
                     lastMousePos.current = { x: event.clientX, y: event.clientY };
@@ -3676,6 +4058,23 @@
                     pointers.size === 1
                 ) {
                     handlePointPick(event);
+                }
+
+                // Fadenkreuz-Korrektur: Tippen/Klicken holt die Stelle unter das Fadenkreuz in der Bildmitte.
+                if (
+                    allowPointPick &&
+                    isTwoPhaseCrosshairActive &&
+                    gesture.mode === 'pan' &&
+                    !gesture.moved &&
+                    !gesture.didPinch &&
+                    pointers.size === 1
+                ) {
+                    const stageRect = imageContainerRef.current?.getBoundingClientRect();
+                    if (stageRect) {
+                        const offsetX = stageRect.left + stageRect.width / 2 - event.clientX;
+                        const offsetY = stageRect.top + stageRect.height / 2 - event.clientY;
+                        setCalibPan(pan => ({ x: pan.x + offsetX, y: pan.y + offsetY }));
+                    }
                 }
 
                 pointers.delete(event.pointerId);
@@ -4415,9 +4814,9 @@
                 return nextSettings;
             };
 
-            const handleTwoPhaseThresholdChange = (field, value) => {
+            const handleTwoPhaseThresholdChange = (field, value, extraSettings = null) => {
                 const currentSettings = twoPhaseSettingsRef.current;
-                const parsedValue = Number.parseInt(value, 10);
+                const parsedValue = Math.round(Number.parseFloat(value) * 10) / 10;
                 let nextValue = Number.isNaN(parsedValue) ? currentSettings[field] : parsedValue;
 
                 if (field === 'darkBrightnessThreshold') {
@@ -4444,13 +4843,14 @@
 
                 const nextSettings = {
                     ...currentSettings,
+                    ...(extraSettings || {}),
                     [field]: nextValue
                 };
                 applyTwoPhaseSettings(nextSettings);
                 scheduleCalibrationPreview({
                     calibrationMode: 'twoPhase',
                     twoPhaseSettings: nextSettings
-                });
+                }, 0);
             };
 
             const handleTwoPhaseOptionChange = (field, value) => {
@@ -4467,10 +4867,11 @@
             };
 
             const handleResetTwoPhaseSettings = () => {
-                const nextSettings = {
+                // Zurück auf die aus dem Bild vorgeschlagenen Startwerte (Rest: Werkseinstellung).
+                const nextSettings = getTwoPhaseStartSettings({
                     ...createTwoPhaseSettings(),
                     ranges: twoPhaseModelRef.current?.ranges || null
-                };
+                });
                 const nextRefinementPoints = applyTwoPhaseRefinementPoints([]);
                 const nextSmoothing = { category: 'none', radius: 3 };
                 twoPhaseSmoothingRef.current = nextSmoothing;
@@ -4503,6 +4904,1246 @@
                     standardMaskVisibility: nextVisibility
                 });
             };
+
+            // --- 3-PHASEN SLIDER-ASSISTENT ---
+            // Ein Schritt pro Entscheidung, jeweils ein Slider. Vorschau fokussiert auf die aktuelle Entscheidung,
+            // beim Ziehen leuchten Pixel knapp an der Schwelle türkis auf.
+            const [twoPhaseDrag, setTwoPhaseDrag] = useState(null);
+            const [twoPhaseDeltaBase, setTwoPhaseDeltaBase] = useState(null);
+            const [twoPhaseCrosshair, setTwoPhaseCrosshair] = useState(null);
+            const [twoPhaseFixValue, setTwoPhaseFixValue] = useState(0);
+            const [twoPhaseFixPreview, setTwoPhaseFixPreview] = useState(null);
+            const twoPhaseFixSessionRef = useRef(null);
+            const twoPhaseDragAbortRef = useRef(null);
+            const twoPhaseAutoStartVersionRef = useRef(null);
+            const isTwoPhaseAssistantActive = isCalibrationOpen && calibrationMode === 'twoPhase';
+            const isTwoPhaseCrosshairActive = isTwoPhaseAssistantActive && twoPhaseStep === 'fix';
+            const activeTwoPhaseStepIndex = Math.max(0, TWO_PHASE_ASSIST_STEPS.findIndex(step => step.id === twoPhaseStep));
+
+            const formatTwoPhaseNumber = (value, digits = 1) => (
+                (digits === 0 ? TWO_PHASE_NUMBER_FORMAT_0 : TWO_PHASE_NUMBER_FORMAT_1).format(Number(value || 0))
+            );
+
+            const refreshTwoPhaseVisual = (patch) => {
+                twoPhaseVisualRef.current = { ...twoPhaseVisualRef.current, ...patch };
+                if (isCalibrationOpen && calibrationMode === 'twoPhase') {
+                    scheduleCalibrationPreview({ calibrationMode: 'twoPhase' }, 0);
+                }
+            };
+
+            useEffect(() => {
+                const step = TWO_PHASE_ASSIST_STEPS.find(item => item.id === twoPhaseStep);
+                twoPhaseVisualRef.current = {
+                    focus: isTwoPhaseAssistantActive ? (step?.focus || null) : null,
+                    highlight: null
+                };
+                setTwoPhaseDeltaBase(null);
+                if (isTwoPhaseAssistantActive) {
+                    scheduleCalibrationPreview({ calibrationMode: 'twoPhase' }, 0);
+                }
+            }, [twoPhaseStep, isTwoPhaseAssistantActive]);
+
+            const twoPhaseSuggestions = useMemo(() => (
+                isTwoPhaseAssistantActive
+                    ? getTwoPhaseSuggestedThresholds(twoPhaseModelRef.current, twoPhaseSettings.vegetationThreshold)
+                    : null
+            ), [isTwoPhaseAssistantActive, twoPhaseModelVersion, twoPhaseSettings.vegetationThreshold]);
+
+            const getTwoPhaseStartSettings = (baseSettings) => {
+                const suggestions = getTwoPhaseSuggestedThresholds(twoPhaseModelRef.current);
+                if (!suggestions) return baseSettings;
+                return {
+                    ...baseSettings,
+                    vegetationThreshold: suggestions.vegetationThreshold ?? baseSettings.vegetationThreshold,
+                    livingThreshold: suggestions.livingThreshold ?? baseSettings.livingThreshold
+                };
+            };
+
+            // Startwerte einmal pro Bild aus dem Bild ableiten, solange noch die Werkseinstellung aktiv ist.
+            useEffect(() => {
+                if (!isTwoPhaseAssistantActive || !twoPhaseModelRef.current?.sampleCount) return;
+                if (twoPhaseAutoStartVersionRef.current === twoPhaseModelVersion) return;
+                twoPhaseAutoStartVersionRef.current = twoPhaseModelVersion;
+                const currentSettings = twoPhaseSettingsRef.current;
+                if (
+                    currentSettings.vegetationThreshold !== DEFAULT_TWO_PHASE_SETTINGS.vegetationThreshold ||
+                    currentSettings.livingThreshold !== DEFAULT_TWO_PHASE_SETTINGS.livingThreshold
+                ) {
+                    return;
+                }
+                const nextSettings = getTwoPhaseStartSettings(currentSettings);
+                applyTwoPhaseSettings(nextSettings);
+                scheduleCalibrationPreview({ calibrationMode: 'twoPhase', twoPhaseSettings: nextSettings }, 0);
+            }, [isTwoPhaseAssistantActive, twoPhaseModelVersion]);
+
+            const sampleTwoPhaseCrosshair = () => {
+                const stage = imageContainerRef.current;
+                const rawData = imageDataRef.current;
+                if (!stage || !rawData) return null;
+                const stageRect = stage.getBoundingClientRect();
+                const point = getCalibrationCanvasPoint(
+                    stageRect.left + stageRect.width / 2,
+                    stageRect.top + stageRect.height / 2
+                );
+                if (!point) return { status: 'outside' };
+
+                const { canvas, canvasX, canvasY, rect } = point;
+                const pixelIndex = canvasY * canvas.width + canvasX;
+                const sourceIndex = pixelIndex * 4;
+                const textureData = textureDataRef.current;
+                const r = rawData[sourceIndex];
+                const g = rawData[sourceIndex + 1];
+                const b = rawData[sourceIndex + 2];
+                const status = getTwoPhaseCategory(
+                    r,
+                    g,
+                    b,
+                    textureData?.roughness ? textureData.roughness[pixelIndex] : null,
+                    textureData?.fibrousness ? textureData.fibrousness[pixelIndex] : 0,
+                    twoPhaseSettingsRef.current,
+                    twoPhaseModelRef.current?.ranges
+                );
+
+                return {
+                    status,
+                    x: canvasX,
+                    y: canvasY,
+                    rgb: `rgb(${r},${g},${b})`,
+                    screenScale: rect.width / canvas.width,
+                    diagonal: Math.hypot(canvas.width, canvas.height)
+                };
+            };
+
+            useEffect(() => {
+                if (!isTwoPhaseCrosshairActive) {
+                    setTwoPhaseCrosshair(null);
+                    return undefined;
+                }
+                // Warten, bis die Zoom-/Verschiebe-Animation (0,1 s) abgeschlossen ist.
+                const timer = window.setTimeout(() => setTwoPhaseCrosshair(sampleTwoPhaseCrosshair()), 160);
+                return () => window.clearTimeout(timer);
+            }, [isTwoPhaseCrosshairActive, calibPan, calibZoom, twoPhaseSettings, twoPhaseModelVersion, twoPhaseRefinementPoints]);
+
+            const previewTwoPhaseFix = (rawValue) => {
+                const value = Math.round(getClampedValue(Number.parseFloat(rawValue) || 0, -TWO_PHASE_FIX_SLIDER_MAX, TWO_PHASE_FIX_SLIDER_MAX));
+                setTwoPhaseFixValue(value);
+                if (!twoPhaseFixSessionRef.current) {
+                    twoPhaseFixSessionRef.current = { sample: sampleTwoPhaseCrosshair(), pending: null };
+                }
+                const session = twoPhaseFixSessionRef.current;
+                const sample = session.sample;
+                const target = value < 0 ? 'soil' : (value > 0 ? 'dead' : null);
+                const canApply = Boolean(
+                    target &&
+                    sample &&
+                    (sample.status === 'soil' || sample.status === 'dead') &&
+                    sample.status !== target
+                );
+                const tolerance = getTwoPhaseFixTolerance(value);
+                session.pending = canApply
+                    ? {
+                        id: 'pending',
+                        x: sample.x,
+                        y: sample.y,
+                        rgb: sample.rgb,
+                        sourceCategory: sample.status,
+                        category: target,
+                        tolerance
+                    }
+                    : null;
+                const radius = tolerance <= 0 || !sample?.diagonal
+                    ? 0
+                    : Math.max(1, Math.round(sample.diagonal * (tolerance / 100)));
+                setTwoPhaseFixPreview({
+                    target,
+                    canApply,
+                    radius,
+                    screenRadius: radius * (sample?.screenScale || 0)
+                });
+                scheduleCalibrationPreview({
+                    calibrationMode: 'twoPhase',
+                    twoPhaseRefinementPoints: session.pending
+                        ? [...twoPhaseRefinementPointsRef.current, session.pending]
+                        : twoPhaseRefinementPointsRef.current
+                }, 0);
+            };
+
+            const commitTwoPhaseFix = () => {
+                const session = twoPhaseFixSessionRef.current;
+                twoPhaseFixSessionRef.current = null;
+                setTwoPhaseFixValue(0);
+                setTwoPhaseFixPreview(null);
+                clearScheduledCalibrationPreview();
+                pendingCalibrationPreviewOptionsRef.current = {};
+                const nextPoints = session?.pending
+                    ? applyTwoPhaseRefinementPoints([
+                        ...twoPhaseRefinementPointsRef.current,
+                        { ...session.pending, id: Date.now() }
+                    ])
+                    : twoPhaseRefinementPointsRef.current;
+                refreshCalibrationPreview({
+                    calibrationMode: 'twoPhase',
+                    twoPhaseRefinementPoints: nextPoints
+                });
+            };
+
+            const endTwoPhaseDrag = () => {
+                twoPhaseDragAbortRef.current?.abort();
+                twoPhaseDragAbortRef.current = null;
+                setTwoPhaseDrag(null);
+                if (twoPhaseFixSessionRef.current) {
+                    twoPhaseVisualRef.current = { ...twoPhaseVisualRef.current, highlight: null };
+                    commitTwoPhaseFix();
+                    return;
+                }
+                refreshTwoPhaseVisual({ highlight: null });
+            };
+
+            const beginTwoPhaseDrag = (field, fine = false, anchor = null) => {
+                twoPhaseDragAbortRef.current?.abort();
+                const controller = new AbortController();
+                twoPhaseDragAbortRef.current = controller;
+                const finish = () => endTwoPhaseDrag();
+                window.addEventListener('pointerup', finish, { signal: controller.signal });
+                window.addEventListener('pointercancel', finish, { signal: controller.signal });
+                setTwoPhaseDrag({ field, fine, anchor });
+                setTwoPhaseDeltaBase(twoPhaseLiveCounts ? { counts: twoPhaseLiveCounts } : null);
+                if (field === 'fix') {
+                    twoPhaseFixSessionRef.current = { sample: sampleTwoPhaseCrosshair(), pending: null };
+                    return;
+                }
+                refreshTwoPhaseVisual({
+                    highlight: field === 'gaps' ? null : { field, band: fine ? 0.6 : 1.5 }
+                });
+            };
+
+            const handleTwoPhaseSliderKeyDown = (event, value, min, max, onValue, highlightField) => {
+                const keySteps = { ArrowRight: 1, ArrowUp: 1, ArrowLeft: -1, ArrowDown: -1, PageUp: 5, PageDown: -5 };
+                let nextValue = null;
+                if (Object.prototype.hasOwnProperty.call(keySteps, event.key)) {
+                    nextValue = value + keySteps[event.key] * (event.shiftKey ? 0.1 : 1);
+                } else if (event.key === 'Home') {
+                    nextValue = min;
+                } else if (event.key === 'End') {
+                    nextValue = max;
+                }
+                if (nextValue === null) return;
+                event.preventDefault();
+                if (highlightField && highlightField !== 'gaps' && !twoPhaseVisualRef.current.highlight) {
+                    twoPhaseVisualRef.current = {
+                        ...twoPhaseVisualRef.current,
+                        highlight: { field: highlightField, band: event.shiftKey ? 0.6 : 1.5 }
+                    };
+                }
+                onValue(Math.round(getClampedValue(nextValue, min, max) * 10) / 10);
+            };
+
+            const clearTwoPhaseKeyboardHighlight = () => {
+                if (twoPhaseDragAbortRef.current || !twoPhaseVisualRef.current.highlight) return;
+                refreshTwoPhaseVisual({ highlight: null });
+            };
+
+            const getTwoPhaseTextureValue = (settings) => Math.max(
+                settings.roughnessEnabled ? settings.roughnessThreshold || 0 : 0,
+                settings.fibrousnessEnabled ? settings.fibrousnessThreshold || 0 : 0
+            );
+
+            const applyTwoPhaseSettingsPatch = (patch) => {
+                const nextSettings = { ...twoPhaseSettingsRef.current, ...patch };
+                applyTwoPhaseSettings(nextSettings);
+                scheduleCalibrationPreview({
+                    calibrationMode: 'twoPhase',
+                    twoPhaseSettings: nextSettings
+                }, 0);
+            };
+
+            const parseTwoPhaseSliderValue = (value, min, max) => {
+                const parsedValue = Number.parseFloat(value);
+                return Math.round(getClampedValue(Number.isNaN(parsedValue) ? min : parsedValue, min, max) * 10) / 10;
+            };
+
+            const setTwoPhaseTexture = (value) => {
+                const nextValue = parseTwoPhaseSliderValue(value, 0, 100);
+                applyTwoPhaseSettingsPatch({
+                    roughnessEnabled: nextValue > 0,
+                    fibrousnessEnabled: nextValue > 0,
+                    roughnessThreshold: nextValue,
+                    fibrousnessThreshold: nextValue
+                });
+            };
+
+            const getTwoPhaseLightHandles = (settings) => ({
+                dark: settings.darkBrightnessEnabled ? settings.darkBrightnessThreshold : 0,
+                bright: settings.brightBrightnessEnabled ? settings.brightBrightnessThreshold : 100
+            });
+
+            const setTwoPhaseLight = (side, value) => {
+                const handles = getTwoPhaseLightHandles(twoPhaseSettingsRef.current);
+                if (side === 'dark') {
+                    const nextValue = parseTwoPhaseSliderValue(value, 0, Math.max(0, handles.bright - 1));
+                    applyTwoPhaseSettingsPatch({
+                        darkBrightnessEnabled: nextValue > 0,
+                        darkBrightnessThreshold: nextValue
+                    });
+                } else {
+                    const nextValue = parseTwoPhaseSliderValue(value, Math.min(100, handles.dark + 1), 100);
+                    applyTwoPhaseSettingsPatch({
+                        brightBrightnessEnabled: nextValue < 100,
+                        brightBrightnessThreshold: nextValue
+                    });
+                }
+            };
+
+            const twoPhaseGapValue = twoPhaseSmoothing.category === 'none'
+                ? 0
+                : (twoPhaseSmoothing.category === 'soil' ? -twoPhaseSmoothing.radius : twoPhaseSmoothing.radius);
+
+            const setTwoPhaseGaps = (value) => {
+                const nextValue = Math.round(getClampedValue(Number.parseFloat(value) || 0, -50, 50));
+                const nextSmoothing = {
+                    category: nextValue < 0 ? 'soil' : (nextValue > 0 ? 'dead' : 'none'),
+                    radius: nextValue === 0 ? twoPhaseSmoothingRef.current.radius : Math.abs(nextValue)
+                };
+                twoPhaseSmoothingRef.current = nextSmoothing;
+                setTwoPhaseSmoothing(nextSmoothing);
+                scheduleCalibrationPreview({
+                    calibrationMode: 'twoPhase',
+                    twoPhaseSmoothing: nextSmoothing
+                }, 0);
+            };
+
+            const renderTwoPhaseLiveStats = (emphasis = []) => {
+                const counts = twoPhaseLiveCounts;
+                const total = counts ? counts.living + counts.dead + counts.soil + counts.stone : 0;
+                if (!total) return null;
+                const baseCounts = twoPhaseDeltaBase?.counts;
+                const baseTotal = baseCounts
+                    ? baseCounts.living + baseCounts.dead + baseCounts.soil + baseCounts.stone
+                    : 0;
+                const items = [
+                    { key: 'living', label: 'Lebend', color: 'text-emerald-300' },
+                    { key: 'dead', label: 'Abgestorben', color: 'text-yellow-300' },
+                    { key: 'soil', label: 'Boden', color: 'text-pink-300' }
+                ];
+                if (counts.stone > 0) items.push({ key: 'stone', label: 'Sonstiges', color: 'text-blue-300' });
+
+                return (
+                    <div className="two-phase-live-stats flex flex-wrap gap-x-3 gap-y-1 font-mono text-[11px]" aria-live="polite">
+                        {items.map(item => {
+                            const percent = (counts[item.key] / total) * 100;
+                            const delta = baseTotal ? percent - (baseCounts[item.key] / baseTotal) * 100 : 0;
+                            const isEmphasized = emphasis.includes(item.key);
+                            return (
+                                <span key={item.key} className={`${item.color} ${isEmphasized ? 'font-bold' : 'opacity-70'}`}>
+                                    {item.label} {formatTwoPhaseNumber(percent)}&nbsp;%
+                                    {Math.abs(delta) >= 0.05 && (
+                                        <span className={delta > 0 ? 'text-white' : 'text-slate-400'}>
+                                            {' '}({delta > 0 ? '+' : '−'}{formatTwoPhaseNumber(Math.abs(delta))})
+                                        </span>
+                                    )}
+                                </span>
+                            );
+                        })}
+                    </div>
+                );
+            };
+
+            const getSliderMarkerLeft = (value, min, max) => {
+                const ratio = getClampedValue((value - min) / Math.max(0.0001, max - min), 0, 1);
+                // Thumb-Mittelpunkt läuft von halber Thumb-Breite bis Breite minus halbe Thumb-Breite.
+                return `calc(${ratio * 100}% + ${(0.5 - ratio) * 20}px)`;
+            };
+
+            const renderTwoPhaseAssistSlider = ({
+                field,
+                label,
+                value,
+                min,
+                max,
+                onValue,
+                track,
+                suggestion = null,
+                fine = true,
+                disabled = false
+            }) => {
+                const isFineDrag = twoPhaseDrag?.field === field && twoPhaseDrag.fine;
+                const anchor = isFineDrag && twoPhaseDrag.anchor !== null ? twoPhaseDrag.anchor : Math.round(value);
+                const fineMin = Math.max(min, anchor - 5);
+                const fineMax = Math.min(max, anchor + 5);
+
+                return (
+                    <div className="two-phase-assist-slider">
+                        <div className="relative">
+                            <input
+                                type="range"
+                                min={min}
+                                max={max}
+                                step="0.1"
+                                value={value}
+                                disabled={disabled}
+                                onChange={(event) => onValue(event.target.value)}
+                                onPointerDown={() => beginTwoPhaseDrag(field, false)}
+                                onKeyDown={(event) => handleTwoPhaseSliderKeyDown(event, value, min, max, onValue, field)}
+                                onBlur={clearTwoPhaseKeyboardHighlight}
+                                className="settings-slider two-phase-main-slider w-full rounded-lg appearance-none cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
+                                style={{
+                                    '--slider-track': track,
+                                    '--slider-thumb': '#d946ef',
+                                    '--slider-thumb-ring': 'rgba(217, 70, 239, 0.28)'
+                                }}
+                                aria-label={label}
+                                aria-valuetext={formatTwoPhaseNumber(value)}
+                            />
+                            {suggestion !== null && (
+                                <span
+                                    className="two-phase-suggestion-mark"
+                                    style={{ left: getSliderMarkerLeft(suggestion, min, max) }}
+                                    title={`Vorschlag ${formatTwoPhaseNumber(suggestion)}`}
+                                    aria-hidden="true"
+                                />
+                            )}
+                        </div>
+                        {fine && (
+                            <div className="two-phase-fine-row mt-1 flex items-center gap-2">
+                                <span className="w-9 shrink-0 text-[10px] font-bold uppercase tracking-wider text-slate-500">Fein</span>
+                                <input
+                                    type="range"
+                                    min={fineMin}
+                                    max={fineMax}
+                                    step="0.1"
+                                    value={getClampedValue(value, fineMin, fineMax)}
+                                    disabled={disabled}
+                                    onChange={(event) => onValue(event.target.value)}
+                                    onPointerDown={() => beginTwoPhaseDrag(field, true, anchor)}
+                                    onKeyDown={() => {
+                                        if (!twoPhaseVisualRef.current.highlight) {
+                                            twoPhaseVisualRef.current = {
+                                                ...twoPhaseVisualRef.current,
+                                                highlight: { field, band: 0.6 }
+                                            };
+                                        }
+                                    }}
+                                    onBlur={clearTwoPhaseKeyboardHighlight}
+                                    className="settings-slider two-phase-fine-slider min-w-0 flex-1 rounded-lg appearance-none cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
+                                    style={{
+                                        '--slider-track': 'repeating-linear-gradient(90deg, #475569 0 2px, #1e293b 2px 10%)',
+                                        '--slider-thumb': '#f0abfc',
+                                        '--slider-thumb-ring': 'rgba(240, 171, 252, 0.25)'
+                                    }}
+                                    aria-label={`${label} – Feinregler ±5 in 0,1er-Schritten`}
+                                    aria-valuetext={formatTwoPhaseNumber(value)}
+                                />
+                                <span className="w-16 shrink-0 text-right font-mono text-[10px] text-slate-500">
+                                    {formatTwoPhaseNumber(fineMin, 0)}–{formatTwoPhaseNumber(fineMax, 0)}
+                                </span>
+                            </div>
+                        )}
+                    </div>
+                );
+            };
+
+            const renderTwoPhaseSuggestionChip = (field, suggestion, onValue) => {
+                if (suggestion === null || suggestion === undefined) return null;
+                const isApplied = Math.abs(twoPhaseSettings[field] - suggestion) < 0.05;
+                return (
+                    <button
+                        type="button"
+                        onClick={() => onValue(suggestion)}
+                        disabled={isApplied}
+                        className="two-phase-suggestion-chip inline-flex items-center gap-1.5 rounded-full border border-cyan-800 bg-cyan-950/40 px-2.5 py-1 text-[11px] font-bold text-cyan-200 hover:bg-cyan-900/50 disabled:cursor-default disabled:border-slate-700 disabled:bg-transparent disabled:text-slate-500"
+                    >
+                        <span className="h-2 w-2 rounded-full border border-current" aria-hidden="true" />
+                        {isApplied
+                            ? `Vorschlag ${formatTwoPhaseNumber(suggestion)} aktiv`
+                            : `Vorschlag ${formatTwoPhaseNumber(suggestion)} übernehmen`}
+                    </button>
+                );
+            };
+
+            const renderTwoPhaseHistogram = (canvasRef, threshold, suggestion, gradientClass, ariaLabel, dimmed = false) => (
+                <div className={`relative overflow-hidden rounded-lg border border-slate-700 ${gradientClass}`}>
+                    <canvas
+                        ref={canvasRef}
+                        width="360"
+                        height="64"
+                        className={`block w-full ${isMobileCalibration ? 'h-10' : 'h-16'} ${dimmed ? 'opacity-40' : ''}`}
+                        aria-label={ariaLabel}
+                    />
+                    {suggestion !== null && suggestion !== undefined && (
+                        <span
+                            className="pointer-events-none absolute inset-y-0 w-0 -translate-x-1/2 border-l border-dashed border-cyan-300/80"
+                            style={{ left: `${suggestion}%` }}
+                            aria-hidden="true"
+                        />
+                    )}
+                    <span
+                        className="pointer-events-none absolute inset-y-0 w-0.5 -translate-x-1/2 bg-white shadow-[0_0_0_1px_rgba(15,23,42,0.7)]"
+                        style={{ left: `${threshold}%` }}
+                        aria-hidden="true"
+                    />
+                </div>
+            );
+
+            const renderTwoPhaseScaleLabels = (left, center, right) => (
+                <div className="mt-1 flex justify-between gap-2 text-[10px] font-bold uppercase tracking-wider">
+                    <span className={left.className}>{left.label}</span>
+                    {center && <span className="font-mono normal-case tracking-normal text-fuchsia-200">{center}</span>}
+                    <span className={`text-right ${right.className}`}>{right.label}</span>
+                </div>
+            );
+
+            const renderTwoPhaseHint = (text) => (
+                <p className="two-phase-hint text-[11px] leading-relaxed text-slate-400">{text}</p>
+            );
+
+            const getTwoPhaseStepSummary = (stepId) => {
+                if (stepId === 'living') return formatTwoPhaseNumber(twoPhaseSettings.vegetationThreshold);
+                if (stepId === 'dead') {
+                    return twoPhaseSettings.colorEnabled === false ? 'aus' : formatTwoPhaseNumber(twoPhaseSettings.livingThreshold);
+                }
+                if (stepId === 'texture') {
+                    const textureValue = getTwoPhaseTextureValue(twoPhaseSettings);
+                    return textureValue > 0 ? `${formatTwoPhaseNumber(textureValue)} %` : 'aus';
+                }
+                if (stepId === 'light') {
+                    const handles = getTwoPhaseLightHandles(twoPhaseSettings);
+                    if (handles.dark <= 0 && handles.bright >= 100) return 'aus';
+                    return `${handles.dark > 0 ? `≤${formatTwoPhaseNumber(handles.dark, 0)}` : '–'} / ${handles.bright < 100 ? `≥${formatTwoPhaseNumber(handles.bright, 0)}` : '–'}`;
+                }
+                if (stepId === 'gaps') {
+                    if (twoPhaseGapValue === 0) return 'aus';
+                    return `${twoPhaseGapValue < 0 ? 'Boden' : 'Abgest.'} ${Math.abs(twoPhaseGapValue)} px`;
+                }
+                if (stepId === 'fix') return twoPhaseRefinementPoints.length ? `${twoPhaseRefinementPoints.length} Punkt${twoPhaseRefinementPoints.length === 1 ? '' : 'e'}` : 'keine';
+                return '';
+            };
+
+            const categoryLabel = (category) => (category === 'dead' ? 'Abgestorben' : 'Boden');
+
+            const renderTwoPhaseStepBody = (stepId) => {
+                if (stepId === 'living') {
+                    return (
+                        <div className="two-phase-step-body">
+                            {renderTwoPhaseHint('Ziehe, bis alle Pflanzen grün markiert sind, aber kein Stroh. Türkis leuchtende Pixel liegen genau an der Grenze.')}
+                            {renderTwoPhaseHistogram(
+                                vegetationHistogramRef,
+                                twoPhaseSettings.vegetationThreshold,
+                                twoPhaseSuggestions?.vegetationThreshold,
+                                'bg-gradient-to-r from-amber-950/80 via-slate-800 to-emerald-950/80',
+                                'Verteilung von Boden bis Pflanze'
+                            )}
+                            {renderTwoPhaseAssistSlider({
+                                field: 'vegetationThreshold',
+                                label: 'Grenze zwischen Boden und Pflanze',
+                                value: twoPhaseSettings.vegetationThreshold,
+                                min: 1,
+                                max: 99,
+                                onValue: (value) => handleTwoPhaseThresholdChange('vegetationThreshold', value),
+                                track: 'linear-gradient(90deg, #78350f, #64748b 48%, #16a34a)',
+                                suggestion: twoPhaseSuggestions?.vegetationThreshold ?? null
+                            })}
+                            {renderTwoPhaseScaleLabels(
+                                { label: '← mehr Pflanze', className: 'text-emerald-400' },
+                                formatTwoPhaseNumber(twoPhaseSettings.vegetationThreshold),
+                                { label: 'weniger Pflanze →', className: 'text-amber-400' }
+                            )}
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                                {renderTwoPhaseSuggestionChip(
+                                    'vegetationThreshold',
+                                    twoPhaseSuggestions?.vegetationThreshold,
+                                    (value) => handleTwoPhaseThresholdChange('vegetationThreshold', value)
+                                )}
+                                {renderTwoPhaseLiveStats(['living'])}
+                            </div>
+                        </div>
+                    );
+                }
+
+                if (stepId === 'dead') {
+                    const colorDisabled = twoPhaseSettings.colorEnabled === false;
+                    return (
+                        <div className="two-phase-step-body">
+                            {renderTwoPhaseHint('Nur Nicht-Lebendes wird gezeigt. Ziehe, bis Stroh gelb und Erde pink markiert ist.')}
+                            {renderTwoPhaseHistogram(
+                                healthHistogramRef,
+                                twoPhaseSettings.livingThreshold,
+                                twoPhaseSuggestions?.livingThreshold,
+                                'bg-gradient-to-r from-amber-950/90 via-orange-950/60 to-yellow-900/70',
+                                'Verteilung von braunem Boden bis gelblichem abgestorbenem Pflanzenmaterial',
+                                colorDisabled
+                            )}
+                            {renderTwoPhaseAssistSlider({
+                                field: 'livingThreshold',
+                                label: 'Grenze zwischen braunem Boden und gelblichem abgestorbenem Pflanzenmaterial',
+                                value: twoPhaseSettings.livingThreshold,
+                                min: 0,
+                                max: 100,
+                                onValue: (value) => handleTwoPhaseThresholdChange('livingThreshold', value, { colorEnabled: true }),
+                                track: 'linear-gradient(90deg, #78350f, #b45309 52%, #eab308)',
+                                suggestion: twoPhaseSuggestions?.livingThreshold ?? null
+                            })}
+                            {renderTwoPhaseScaleLabels(
+                                { label: '← mehr Abgestorben', className: 'text-yellow-400' },
+                                colorDisabled ? 'aus' : formatTwoPhaseNumber(twoPhaseSettings.livingThreshold),
+                                { label: 'mehr Boden →', className: 'text-pink-300' }
+                            )}
+                            {colorDisabled && (
+                                <p className="text-[11px] text-amber-300">Farbe ist unter „Erweitert“ deaktiviert. Den Slider zu bewegen schaltet sie wieder ein.</p>
+                            )}
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                                {renderTwoPhaseSuggestionChip(
+                                    'livingThreshold',
+                                    twoPhaseSuggestions?.livingThreshold,
+                                    (value) => handleTwoPhaseThresholdChange('livingThreshold', value, { colorEnabled: true })
+                                )}
+                                {renderTwoPhaseLiveStats(['dead', 'soil'])}
+                            </div>
+                        </div>
+                    );
+                }
+
+                if (stepId === 'texture') {
+                    const textureValue = getTwoPhaseTextureValue(twoPhaseSettings);
+                    const combinationMode = twoPhaseSettings.featureCombinationMode ?? twoPhaseSettings.textureCombinationMode ?? 'or';
+                    return (
+                        <div className="two-phase-step-body">
+                            {renderTwoPhaseHint('Optional: Erkennt halmartige, raue Strukturen zusätzlich als Abgestorben – hilfreich bei grauem oder verschmutztem Stroh. 0 = aus.')}
+                            {renderTwoPhaseAssistSlider({
+                                field: 'texture',
+                                label: 'Einfluss der Struktur (Rauigkeit und Faserigkeit) auf Abgestorben',
+                                value: textureValue,
+                                min: 0,
+                                max: 100,
+                                onValue: setTwoPhaseTexture,
+                                track: 'linear-gradient(90deg, #334155, #a16207, #fde68a)'
+                            })}
+                            {renderTwoPhaseScaleLabels(
+                                { label: '← aus', className: 'text-slate-500' },
+                                textureValue > 0 ? `${formatTwoPhaseNumber(textureValue)} %` : 'aus',
+                                { label: 'stark →', className: 'text-yellow-300' }
+                            )}
+                            {combinationMode !== 'or' && (
+                                <p className="text-[11px] text-amber-300">
+                                    Verknüpfung steht auf „{combinationMode === 'and' ? 'UND' : 'MEHRHEIT'}“ (Erweitert): Struktur macht die Erkennung dann strenger statt großzügiger.
+                                </p>
+                            )}
+                            {renderTwoPhaseLiveStats(['dead', 'soil'])}
+                        </div>
+                    );
+                }
+
+                if (stepId === 'light') {
+                    const handles = getTwoPhaseLightHandles(twoPhaseSettings);
+                    const darkTarget = categoryLabel(twoPhaseSettings.darkBrightnessCategory === 'dead' ? 'dead' : 'soil');
+                    const brightTarget = categoryLabel(twoPhaseSettings.brightBrightnessCategory === 'soil' ? 'soil' : 'dead');
+                    return (
+                        <div className="two-phase-step-body">
+                            {renderTwoPhaseHint(`Optional: Linker Griff ordnet Schatten (sehr dunkel) ${darkTarget} zu, rechter Griff ordnet Glanz (sehr hell) ${brightTarget} zu. Griffe ganz außen = aus.`)}
+                            <div className="dual-range-control two-phase-light-control" style={{ '--slider-track': 'linear-gradient(90deg, #020617, #475569 50%, #f8fafc)' }}>
+                                <div className="dual-range-track"></div>
+                                <input
+                                    type="range"
+                                    min="0"
+                                    max="100"
+                                    step="0.5"
+                                    value={handles.dark}
+                                    onChange={(event) => setTwoPhaseLight('dark', event.target.value)}
+                                    onPointerDown={() => beginTwoPhaseDrag('darkBrightnessThreshold')}
+                                    onKeyDown={(event) => handleTwoPhaseSliderKeyDown(event, handles.dark, 0, 100, (value) => setTwoPhaseLight('dark', value), 'darkBrightnessThreshold')}
+                                    onBlur={clearTwoPhaseKeyboardHighlight}
+                                    className="dual-range-input"
+                                    style={{ '--slider-thumb': '#64748b', '--slider-thumb-ring': 'rgba(100, 116, 139, 0.35)', zIndex: handles.dark >= handles.bright - 4 ? 5 : 3 }}
+                                    aria-label={`Schatten-Grenze: bis zu dieser Helligkeit wird ${darkTarget} zugeordnet`}
+                                    aria-valuetext={handles.dark > 0 ? `${formatTwoPhaseNumber(handles.dark)} Prozent` : 'aus'}
+                                />
+                                <input
+                                    type="range"
+                                    min="0"
+                                    max="100"
+                                    step="0.5"
+                                    value={handles.bright}
+                                    onChange={(event) => setTwoPhaseLight('bright', event.target.value)}
+                                    onPointerDown={() => beginTwoPhaseDrag('brightBrightnessThreshold')}
+                                    onKeyDown={(event) => handleTwoPhaseSliderKeyDown(event, handles.bright, 0, 100, (value) => setTwoPhaseLight('bright', value), 'brightBrightnessThreshold')}
+                                    onBlur={clearTwoPhaseKeyboardHighlight}
+                                    className="dual-range-input"
+                                    style={{ '--slider-thumb': '#e2e8f0', '--slider-thumb-ring': 'rgba(226, 232, 240, 0.3)', zIndex: 4 }}
+                                    aria-label={`Glanz-Grenze: ab dieser Helligkeit wird ${brightTarget} zugeordnet`}
+                                    aria-valuetext={handles.bright < 100 ? `${formatTwoPhaseNumber(handles.bright)} Prozent` : 'aus'}
+                                />
+                            </div>
+                            <div className="flex justify-between gap-2 font-mono text-[11px]">
+                                <span className="text-slate-300">Schatten → {darkTarget}: {handles.dark > 0 ? `≤ ${formatTwoPhaseNumber(handles.dark)} %` : 'aus'}</span>
+                                <span className="text-right text-slate-100">Glanz → {brightTarget}: {handles.bright < 100 ? `≥ ${formatTwoPhaseNumber(handles.bright)} %` : 'aus'}</span>
+                            </div>
+                            {renderTwoPhaseLiveStats(['dead', 'soil'])}
+                        </div>
+                    );
+                }
+
+                if (stepId === 'gaps') {
+                    const gapPercent = ((twoPhaseGapValue + 50) / 100) * 100;
+                    return (
+                        <div className="two-phase-step-body">
+                            {renderTwoPhaseHint('Optional: Schließt schmale Lücken zwischen gleich eingestuften Flächen. Nach links für Boden, nach rechts für Abgestorben; je weiter, desto breitere Lücken. Lebend bleibt eine harte Grenze.')}
+                            <div className="relative">
+                                <span className="pointer-events-none absolute left-1/2 top-1/2 h-5 w-0.5 -translate-x-1/2 -translate-y-1/2 rounded bg-slate-400" aria-hidden="true" />
+                                <input
+                                    type="range"
+                                    min="-50"
+                                    max="50"
+                                    step="1"
+                                    value={twoPhaseGapValue}
+                                    onChange={(event) => setTwoPhaseGaps(event.target.value)}
+                                    onPointerDown={() => beginTwoPhaseDrag('gaps')}
+                                    className="settings-slider relative w-full rounded-lg appearance-none cursor-pointer"
+                                    style={{
+                                        '--slider-track': `linear-gradient(90deg, #ec4899, #334155 ${Math.min(50, gapPercent)}%, #334155 ${Math.max(50, gapPercent)}%, #eab308)`,
+                                        '--slider-thumb': '#d946ef',
+                                        '--slider-thumb-ring': 'rgba(217, 70, 239, 0.28)'
+                                    }}
+                                    aria-label="Lücken schließen: links in Boden, rechts in Abgestorben, Mitte aus"
+                                    aria-valuetext={twoPhaseGapValue === 0 ? 'aus' : `${twoPhaseGapValue < 0 ? 'Boden' : 'Abgestorben'} ${Math.abs(twoPhaseGapValue)} Pixel`}
+                                />
+                            </div>
+                            {renderTwoPhaseScaleLabels(
+                                { label: '← Boden', className: 'text-pink-300' },
+                                twoPhaseGapValue === 0 ? 'aus' : `${Math.abs(twoPhaseGapValue)} px`,
+                                { label: 'Abgestorben →', className: 'text-yellow-300' }
+                            )}
+                            {renderTwoPhaseLiveStats(['dead', 'soil'])}
+                        </div>
+                    );
+                }
+
+                if (stepId === 'fix') {
+                    const status = twoPhaseCrosshair?.status;
+                    const statusText = !twoPhaseCrosshair
+                        ? '…'
+                        : status === 'outside'
+                            ? 'außerhalb des Bildes'
+                            : status === 'living'
+                                ? 'Lebend – geschützt, nicht korrigierbar'
+                                : categoryLabel(status);
+                    const statusClass = status === 'dead'
+                        ? 'text-yellow-300'
+                        : (status === 'soil' ? 'text-pink-300' : 'text-slate-400');
+                    const fixTarget = twoPhaseFixPreview?.target;
+                    const fixMessage = !fixTarget
+                        ? (isMobileCalibration
+                            ? 'Bild verschieben, bis das Fadenkreuz auf der falschen Stelle liegt. Dann Slider ziehen – Loslassen übernimmt.'
+                            : 'Bild ziehen (oder Stelle anklicken), bis das Fadenkreuz auf der falschen Stelle liegt. Dann Slider ziehen – Loslassen übernimmt.')
+                        : twoPhaseFixPreview.canApply
+                            ? `Wird zu ${categoryLabel(fixTarget)} · Umkreis ${twoPhaseFixPreview.radius} px`
+                            : `Keine Änderung: Stelle ist ${status === 'living' ? 'Lebend' : (status === 'outside' ? 'außerhalb' : `bereits ${categoryLabel(status)}`)}.`;
+                    const fixPercent = ((twoPhaseFixValue + TWO_PHASE_FIX_SLIDER_MAX) / (2 * TWO_PHASE_FIX_SLIDER_MAX)) * 100;
+                    return (
+                        <div className="two-phase-step-body">
+                            <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                                <span className="text-slate-400">
+                                    Unter dem Fadenkreuz: <strong className={statusClass}>{statusText}</strong>
+                                </span>
+                                {twoPhaseCrosshair?.rgb && (
+                                    <span className="h-4 w-4 rounded-full border border-white/20" style={{ backgroundColor: twoPhaseCrosshair.rgb }} aria-hidden="true" />
+                                )}
+                            </div>
+                            <div className="relative">
+                                <span className="pointer-events-none absolute left-1/2 top-1/2 h-5 w-0.5 -translate-x-1/2 -translate-y-1/2 rounded bg-slate-400" aria-hidden="true" />
+                                <input
+                                    type="range"
+                                    min={-TWO_PHASE_FIX_SLIDER_MAX}
+                                    max={TWO_PHASE_FIX_SLIDER_MAX}
+                                    step="1"
+                                    value={twoPhaseFixValue}
+                                    onChange={(event) => previewTwoPhaseFix(event.target.value)}
+                                    onPointerDown={() => beginTwoPhaseDrag('fix')}
+                                    onKeyDown={(event) => {
+                                        if (event.key === 'Enter') {
+                                            event.preventDefault();
+                                            if (twoPhaseFixSessionRef.current) commitTwoPhaseFix();
+                                        }
+                                    }}
+                                    onBlur={() => {
+                                        if (twoPhaseFixSessionRef.current && !twoPhaseDragAbortRef.current) commitTwoPhaseFix();
+                                    }}
+                                    disabled={status !== 'soil' && status !== 'dead'}
+                                    className="settings-slider relative w-full rounded-lg appearance-none cursor-pointer disabled:cursor-not-allowed disabled:opacity-40"
+                                    style={{
+                                        '--slider-track': `linear-gradient(90deg, #ec4899, #334155 ${Math.min(50, fixPercent)}%, #334155 ${Math.max(50, fixPercent)}%, #eab308)`,
+                                        '--slider-thumb': '#d946ef',
+                                        '--slider-thumb-ring': 'rgba(217, 70, 239, 0.28)'
+                                    }}
+                                    aria-label="Stelle unter dem Fadenkreuz umfärben: links zu Boden, rechts zu Abgestorben, Weite bestimmt den Umkreis"
+                                    aria-valuetext={fixMessage}
+                                />
+                            </div>
+                            {renderTwoPhaseScaleLabels(
+                                { label: '← zu Boden', className: 'text-pink-300' },
+                                twoPhaseFixPreview?.canApply ? `${twoPhaseFixPreview.radius} px` : 'Umkreis',
+                                { label: 'zu Abgestorben →', className: 'text-yellow-300' }
+                            )}
+                            <p className="text-[11px] leading-relaxed text-slate-300" aria-live="polite">{fixMessage}</p>
+                            <div className="flex flex-wrap items-center gap-2">
+                                <span className="text-[11px] text-slate-500">
+                                    {twoPhaseRefinementPoints.length} Korrektur{twoPhaseRefinementPoints.length === 1 ? '' : 'en'}
+                                </span>
+                                {twoPhaseRefinementPoints.length > 0 && (
+                                    <>
+                                        <button
+                                            type="button"
+                                            onClick={() => removeTwoPhaseRefinementPoint(twoPhaseRefinementPoints[twoPhaseRefinementPoints.length - 1].id)}
+                                            className="rounded-lg border border-slate-600 bg-slate-900 px-2.5 py-1 text-[11px] font-bold text-slate-300 hover:bg-slate-700"
+                                        >
+                                            Letzte rückgängig
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={clearTwoPhaseRefinementPoints}
+                                            className="rounded-lg border border-slate-600 bg-slate-900 px-2.5 py-1 text-[11px] font-bold text-slate-300 hover:bg-slate-700"
+                                        >
+                                            Alle löschen
+                                        </button>
+                                    </>
+                                )}
+                            </div>
+                            {renderTwoPhaseLiveStats(['dead', 'soil'])}
+                        </div>
+                    );
+                }
+
+                return null;
+            };
+
+            const renderTwoPhaseStepNav = () => (
+                <div className="two-phase-step-nav mt-3 flex items-center justify-between gap-2">
+                    <button
+                        type="button"
+                        onClick={() => setTwoPhaseStep(TWO_PHASE_ASSIST_STEPS[Math.max(0, activeTwoPhaseStepIndex - 1)].id)}
+                        disabled={activeTwoPhaseStepIndex === 0}
+                        className="rounded-lg border border-slate-600 bg-slate-900 px-3 py-1.5 text-xs font-bold text-slate-300 hover:bg-slate-700 disabled:invisible"
+                    >
+                        ← Zurück
+                    </button>
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                        Schritt {activeTwoPhaseStepIndex + 1} von {TWO_PHASE_ASSIST_STEPS.length}
+                    </span>
+                    <button
+                        type="button"
+                        onClick={() => setTwoPhaseStep(TWO_PHASE_ASSIST_STEPS[Math.min(TWO_PHASE_ASSIST_STEPS.length - 1, activeTwoPhaseStepIndex + 1)].id)}
+                        disabled={activeTwoPhaseStepIndex === TWO_PHASE_ASSIST_STEPS.length - 1}
+                        className="rounded-lg border border-fuchsia-700 bg-fuchsia-950/50 px-3 py-1.5 text-xs font-bold text-fuchsia-200 hover:bg-fuchsia-900/60 disabled:invisible"
+                    >
+                        Weiter →
+                    </button>
+                </div>
+            );
+
+            const renderTwoPhaseStepCard = (step, index) => {
+                const isActive = step.id === twoPhaseStep;
+                if (!isActive) {
+                    return (
+                        <button
+                            key={step.id}
+                            type="button"
+                            onClick={() => setTwoPhaseStep(step.id)}
+                            className="two-phase-step-collapsed flex w-full items-center gap-3 rounded-xl border border-slate-700 bg-slate-800/40 px-3 py-2 text-left hover:border-slate-500 hover:bg-slate-800"
+                        >
+                            <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-slate-900 text-[11px] font-extrabold text-slate-400">{index + 1}</span>
+                            <span className="min-w-0 flex-1 truncate text-xs font-bold text-slate-300">{step.title}</span>
+                            <span className="shrink-0 font-mono text-[11px] text-slate-400">{getTwoPhaseStepSummary(step.id)}</span>
+                        </button>
+                    );
+                }
+
+                return (
+                    <section
+                        key={step.id}
+                        className="two-phase-step-card rounded-xl border border-fuchsia-800/70 bg-slate-800/60 p-3 sm:p-4"
+                        aria-labelledby={`two-phase-step-${step.id}`}
+                    >
+                        <div className="two-phase-step-header mb-2 flex items-center gap-3">
+                            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-fuchsia-950 text-xs font-extrabold text-fuchsia-300">{index + 1}</span>
+                            <h3 id={`two-phase-step-${step.id}`} className="min-w-0 flex-1 text-sm font-bold text-white">{step.title}</h3>
+                            <output className="shrink-0 rounded border border-slate-600 bg-slate-950 px-2 py-1 font-mono text-xs text-fuchsia-200">
+                                {getTwoPhaseStepSummary(step.id)}
+                            </output>
+                        </div>
+                        {renderTwoPhaseStepBody(step.id)}
+                        {renderTwoPhaseStepNav()}
+                    </section>
+                );
+            };
+
+            // Handy: Schrittleiste und aktive Karte ohne Scrollen sichtbar halten.
+            const twoPhaseAssistantRef = useRef(null);
+            useEffect(() => {
+                if (!isMobileCalibration || !isTwoPhaseAssistantActive) return undefined;
+                const frameId = window.requestAnimationFrame(() => {
+                    const assistant = twoPhaseAssistantRef.current;
+                    const scroller = assistant?.closest('.calibration-settings-body');
+                    if (!assistant || !scroller) return;
+                    scroller.scrollTop += assistant.getBoundingClientRect().top - scroller.getBoundingClientRect().top - 4;
+                });
+                return () => window.cancelAnimationFrame(frameId);
+            }, [isMobileCalibration, isTwoPhaseAssistantActive, twoPhaseStep]);
+
+            const renderTwoPhaseAssistant = () => (
+                <div ref={twoPhaseAssistantRef} className="two-phase-assistant space-y-3">
+                    {isMobileCalibration && (
+                        <div className="two-phase-stepper grid grid-cols-6 gap-1" role="tablist" aria-label="Kalibrierschritte">
+                            {TWO_PHASE_ASSIST_STEPS.map((step, index) => {
+                                const isActive = step.id === twoPhaseStep;
+                                return (
+                                    <button
+                                        key={step.id}
+                                        type="button"
+                                        role="tab"
+                                        aria-selected={isActive}
+                                        onClick={() => setTwoPhaseStep(step.id)}
+                                        className={`flex min-h-[44px] flex-col items-center justify-center rounded-lg border px-0.5 text-[10px] font-bold leading-tight ${
+                                            isActive
+                                                ? 'border-fuchsia-500 bg-fuchsia-600 text-white'
+                                                : 'border-slate-700 bg-slate-800 text-slate-400'
+                                        }`}
+                                    >
+                                        <span className="text-xs">{index + 1}</span>
+                                        <span className="max-w-full truncate">{step.short}</span>
+                                    </button>
+                                );
+                            })}
+                        </div>
+                    )}
+
+                    {isMobileCalibration
+                        ? renderTwoPhaseStepCard(TWO_PHASE_ASSIST_STEPS[activeTwoPhaseStepIndex], activeTwoPhaseStepIndex)
+                        : TWO_PHASE_ASSIST_STEPS.map(renderTwoPhaseStepCard)}
+
+                    <details className="two-phase-advanced rounded-xl border border-slate-700 bg-slate-900/40">
+                        <summary className="cursor-pointer p-3 text-xs font-bold text-slate-300">
+                            Erweitert · Merkmale einzeln, Kategorien, Punkte per Klick
+                        </summary>
+                        <div className="space-y-4 border-t border-slate-700 p-3">
+                            <div>
+                                <label className="flex items-center gap-2 text-xs font-bold text-slate-200">
+                                    <input
+                                        type="checkbox"
+                                        checked={twoPhaseSettings.colorEnabled ?? true}
+                                        onChange={(event) => handleTwoPhaseOptionChange('colorEnabled', event.target.checked)}
+                                        className="h-4 w-4 accent-yellow-500"
+                                    />
+                                    Farbe berücksichtigen
+                                </label>
+                                <div className="mt-4 border-t border-slate-700 pt-3">
+                                    <div className="mb-3">
+                                        <div className="flex flex-wrap items-center justify-between gap-2">
+                                            <label className="flex items-center gap-2 text-xs font-bold text-slate-200">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={twoPhaseSettings.roughnessEnabled ?? true}
+                                                    onChange={(event) => handleTwoPhaseOptionChange('roughnessEnabled', event.target.checked)}
+                                                    className="h-4 w-4 accent-amber-600"
+                                                />
+                                                Rauigkeit berücksichtigen
+                                            </label>
+                                            <output className="font-mono text-xs text-amber-300">{twoPhaseSettings.roughnessThreshold}%</output>
+                                        </div>
+                                        <input
+                                            type="range"
+                                            min="0"
+                                            max="100"
+                                            step="1"
+                                            value={twoPhaseSettings.roughnessThreshold}
+                                            onChange={(event) => handleTwoPhaseThresholdChange('roughnessThreshold', event.target.value)}
+                                            disabled={twoPhaseSettings.roughnessEnabled === false}
+                                            className="settings-slider mt-1 w-full rounded-lg appearance-none cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
+                                            style={{
+                                                '--slider-track': 'linear-gradient(90deg, #d6d3d1, #a16207, #0f172a)',
+                                                '--slider-thumb': '#a16207',
+                                                '--slider-thumb-ring': 'rgba(161, 98, 7, 0.28)'
+                                            }}
+                                            aria-label="Mindest-Rauigkeit für abgestorbenes Pflanzenmaterial"
+                                        />
+                                        <div className="mt-1 flex justify-between text-[10px] text-slate-500">
+                                            <span>kein Einfluss</span>
+                                            <span>starker Einfluss</span>
+                                        </div>
+                                        <p className="mt-1 text-[10px] leading-relaxed text-slate-500">
+                                            0&nbsp;% = kein Einfluss. Je höher der Wert, desto mehr raue bzw. strukturierte Pixel werden als Abgestorben berücksichtigt.
+                                        </p>
+                                    </div>
+
+                                    <div>
+                                        <div className="flex flex-wrap items-center justify-between gap-2">
+                                            <label className="flex items-center gap-2 text-xs font-bold text-slate-200">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={twoPhaseSettings.fibrousnessEnabled ?? true}
+                                                    onChange={(event) => handleTwoPhaseOptionChange('fibrousnessEnabled', event.target.checked)}
+                                                    className="h-4 w-4 accent-yellow-500"
+                                                />
+                                                Faserigkeit berücksichtigen
+                                            </label>
+                                            <output className="font-mono text-xs text-yellow-300">{twoPhaseSettings.fibrousnessThreshold}%</output>
+                                        </div>
+                                        <input
+                                            type="range"
+                                            min="0"
+                                            max="100"
+                                            step="1"
+                                            value={twoPhaseSettings.fibrousnessThreshold}
+                                            onChange={(event) => handleTwoPhaseThresholdChange('fibrousnessThreshold', event.target.value)}
+                                            disabled={twoPhaseSettings.fibrousnessEnabled === false}
+                                            className="settings-slider mt-1 w-full rounded-lg appearance-none cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
+                                            style={{
+                                                '--slider-track': 'linear-gradient(90deg, #475569, #ca8a04, #fef08a)',
+                                                '--slider-thumb': '#eab308',
+                                                '--slider-thumb-ring': 'rgba(234, 179, 8, 0.28)'
+                                            }}
+                                            aria-label="Mindest-Faserigkeit für abgestorbenes Pflanzenmaterial"
+                                        />
+                                        <div className="mt-1 flex justify-between text-[10px] text-slate-500">
+                                            <span>kein Einfluss</span>
+                                            <span>starker Einfluss</span>
+                                        </div>
+                                        <p className="mt-1 text-[10px] leading-relaxed text-slate-500">
+                                            0&nbsp;% = kein Einfluss. Je höher der Wert, desto mehr faserige bzw. halmartige Pixel werden als Abgestorben berücksichtigt.
+                                        </p>
+                                    </div>
+
+                                    <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-700 bg-slate-900/60 p-3">
+                                        <div>
+                                            <div className="text-xs font-bold text-slate-200">Merkmale kombinieren</div>
+                                            <div className="mt-0.5 text-[10px] text-slate-500">
+                                                Gilt gemeinsam für alle aktivierten Merkmale: Farbe, Rauigkeit und Faserigkeit.
+                                            </div>
+                                        </div>
+                                        <select
+                                            value={twoPhaseSettings.featureCombinationMode ?? twoPhaseSettings.textureCombinationMode ?? 'or'}
+                                            onChange={(event) => handleTwoPhaseOptionChange('featureCombinationMode', event.target.value)}
+                                            className="rounded border border-slate-600 bg-slate-950 px-2 py-1 text-xs text-slate-200"
+                                            aria-label="Verknüpfung der aktiven Phase-2-Merkmale"
+                                        >
+                                            <option value="or">ODER – eines reicht</option>
+                                            <option value="and">UND – alle müssen passen</option>
+                                            <option value="majority">MEHRHEIT – mehr als die Hälfte</option>
+                                        </select>
+                                    </div>
+
+                                    <p className="mt-2 text-[10px] leading-relaxed text-slate-500">
+                                        Jedes deaktivierte Merkmal wird vollständig ignoriert. Bei Rauigkeit und Faserigkeit bedeutet 0&nbsp;% ebenfalls keinen Beitrag zu „Abgestorben“; mit steigendem Wert kommen zunehmend passende Pixel hinzu. Sind alle Merkmale wirkungslos, bleiben die Pixel Boden.
+                                    </p>
+
+                                    <div className="mt-4 border-t border-slate-700 pt-3">
+                                        <h4 className="text-xs font-bold text-slate-200">Helligkeits-Zuweisung</h4>
+                                        <p className="mt-1 text-[10px] leading-relaxed text-slate-500">
+                                            Optional: sehr dunkle oder sehr helle Pixel überschreiben die vorherige Phase-2-Zuordnung und können sie gezielt auf Boden oder Abgestorben setzen. Bereits in Phase 1 erkanntes Lebend bleibt geschützt.
+                                        </p>
+
+                                        <div className="mt-3 rounded-lg border border-slate-700 bg-slate-900/60 p-3">
+                                            <div className="flex flex-wrap items-center justify-between gap-2">
+                                                <label className="flex items-center gap-2 text-xs font-bold text-slate-200">
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={twoPhaseSettings.darkBrightnessEnabled}
+                                                        onChange={(event) => handleTwoPhaseOptionChange('darkBrightnessEnabled', event.target.checked)}
+                                                        className="h-4 w-4 accent-slate-500"
+                                                    />
+                                                    Dunkle Pixel direkt zuordnen
+                                                </label>
+                                                <select
+                                                    value={twoPhaseSettings.darkBrightnessCategory}
+                                                    onChange={(event) => handleTwoPhaseOptionChange('darkBrightnessCategory', event.target.value)}
+                                                    disabled={!twoPhaseSettings.darkBrightnessEnabled}
+                                                    className="rounded border border-slate-600 bg-slate-950 px-2 py-1 text-xs text-slate-200 disabled:cursor-not-allowed disabled:opacity-50"
+                                                    aria-label="Kategorie für dunkle Pixel"
+                                                >
+                                                    <option value="soil">Boden</option>
+                                                    <option value="dead">Abgestorben</option>
+                                                </select>
+                                            </div>
+                                            <div className="mt-2 flex items-center justify-between gap-3">
+                                                <span className="text-[10px] text-slate-500">Bis zu dieser Helligkeit</span>
+                                                <output className="font-mono text-xs text-slate-300">{twoPhaseSettings.darkBrightnessThreshold}%</output>
+                                            </div>
+                                            <input
+                                                type="range"
+                                                min="0"
+                                                max="100"
+                                                step="1"
+                                                value={twoPhaseSettings.darkBrightnessThreshold}
+                                                onChange={(event) => handleTwoPhaseThresholdChange('darkBrightnessThreshold', event.target.value)}
+                                                disabled={!twoPhaseSettings.darkBrightnessEnabled}
+                                                className="settings-slider mt-1 w-full rounded-lg appearance-none cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
+                                                style={{
+                                                    '--slider-track': 'linear-gradient(90deg, #020617, #475569, #f8fafc)',
+                                                    '--slider-thumb': '#64748b',
+                                                    '--slider-thumb-ring': 'rgba(100, 116, 139, 0.28)'
+                                                }}
+                                                aria-label="Maximale Helligkeit für direkte Dunkel-Zuweisung"
+                                            />
+                                            <div className="mt-1 flex justify-between text-[10px] text-slate-500">
+                                                <span>Dunkel</span>
+                                                <span>Hell</span>
+                                            </div>
+                                        </div>
+
+                                        <div className="mt-3 rounded-lg border border-slate-700 bg-slate-900/60 p-3">
+                                            <div className="flex flex-wrap items-center justify-between gap-2">
+                                                <label className="flex items-center gap-2 text-xs font-bold text-slate-200">
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={twoPhaseSettings.brightBrightnessEnabled}
+                                                        onChange={(event) => handleTwoPhaseOptionChange('brightBrightnessEnabled', event.target.checked)}
+                                                        className="h-4 w-4 accent-slate-300"
+                                                    />
+                                                    Helle Pixel direkt zuordnen
+                                                </label>
+                                                <select
+                                                    value={twoPhaseSettings.brightBrightnessCategory}
+                                                    onChange={(event) => handleTwoPhaseOptionChange('brightBrightnessCategory', event.target.value)}
+                                                    disabled={!twoPhaseSettings.brightBrightnessEnabled}
+                                                    className="rounded border border-slate-600 bg-slate-950 px-2 py-1 text-xs text-slate-200 disabled:cursor-not-allowed disabled:opacity-50"
+                                                    aria-label="Kategorie für helle Pixel"
+                                                >
+                                                    <option value="dead">Abgestorben</option>
+                                                    <option value="soil">Boden</option>
+                                                </select>
+                                            </div>
+                                            <div className="mt-2 flex items-center justify-between gap-3">
+                                                <span className="text-[10px] text-slate-500">Ab dieser Helligkeit</span>
+                                                <output className="font-mono text-xs text-slate-300">{twoPhaseSettings.brightBrightnessThreshold}%</output>
+                                            </div>
+                                            <input
+                                                type="range"
+                                                min="0"
+                                                max="100"
+                                                step="1"
+                                                value={twoPhaseSettings.brightBrightnessThreshold}
+                                                onChange={(event) => handleTwoPhaseThresholdChange('brightBrightnessThreshold', event.target.value)}
+                                                disabled={!twoPhaseSettings.brightBrightnessEnabled}
+                                                className="settings-slider mt-1 w-full rounded-lg appearance-none cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
+                                                style={{
+                                                    '--slider-track': 'linear-gradient(90deg, #020617, #94a3b8, #f8fafc)',
+                                                    '--slider-thumb': '#e2e8f0',
+                                                    '--slider-thumb-ring': 'rgba(226, 232, 240, 0.28)'
+                                                }}
+                                                aria-label="Minimale Helligkeit für direkte Hell-Zuweisung"
+                                            />
+                                            <div className="mt-1 flex justify-between text-[10px] text-slate-500">
+                                                <span>Dunkel</span>
+                                                <span>Hell</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div className="border-t border-slate-700 pt-3">
+                                <h4 className="text-xs font-bold text-slate-200">Korrekturpunkte per Klick</h4>
+                                <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            setPickingCategory(prev => prev === 'dead' ? null : 'dead');
+                                            setBrushActive(false);
+                                            setError(null);
+                                        }}
+                                        className={`min-h-[42px] rounded-lg border px-3 py-2 text-xs font-bold flex items-center justify-center gap-2 transition-all ${
+                                            pickingCategory === 'dead'
+                                                ? 'bg-yellow-500 text-slate-950 border-yellow-300 ring-1 ring-yellow-300'
+                                                : 'bg-slate-900 text-yellow-300 border-yellow-800 hover:bg-yellow-950/40'
+                                        }`}
+                                    >
+                                        <Plus className="h-3.5 w-3.5" />
+                                        {pickingCategory === 'dead' ? 'Bodenstelle im Bild wählen…' : 'Als Abgestorben markieren'}
+                                    </button>
+
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            setPickingCategory(prev => prev === 'soil' ? null : 'soil');
+                                            setBrushActive(false);
+                                            setError(null);
+                                        }}
+                                        className={`min-h-[42px] rounded-lg border px-3 py-2 text-xs font-bold flex items-center justify-center gap-2 transition-all ${
+                                            pickingCategory === 'soil'
+                                                ? 'bg-pink-500 text-white border-pink-300 ring-1 ring-pink-300'
+                                                : 'bg-slate-900 text-pink-300 border-pink-800 hover:bg-pink-950/40'
+                                        }`}
+                                    >
+                                        <Plus className="h-3.5 w-3.5" />
+                                        {pickingCategory === 'soil' ? 'Abgestorbene Stelle im Bild wählen…' : 'Als Boden markieren'}
+                                    </button>
+                                </div>
+
+                                <p className="mt-2 text-[10px] leading-relaxed text-slate-500">
+                                    Toleranz 0&nbsp;% ändert nur den angeklickten Pixel. Mit höherer Toleranz wächst die Korrektur räumlich über direkt angrenzende Pixel derselben ursprünglichen Kategorie. Lebend wird nie verändert.
+                                </p>
+                                {twoPhaseRefinementPoints.length > 0 && (
+                                    <div className="mt-3 space-y-2">
+                                        {twoPhaseRefinementPoints.map((point, index) => (
+                                            <div key={point.id} className="calibration-point-row rounded-lg border border-slate-700 bg-slate-900/60 p-2.5">
+                                                <div className="flex items-center gap-2">
+                                                    <div
+                                                        className="h-6 w-6 shrink-0 rounded-full border border-white/10"
+                                                        style={{ backgroundColor: point.rgb }}
+                                                    ></div>
+                                                    <div className="min-w-0 flex-1">
+                                                        <div className="text-xs font-bold text-slate-200">
+                                                            Punkt {index + 1}: {point.sourceCategory === 'soil' ? 'Boden' : 'Abgestorben'}
+                                                            <span className="mx-1.5 text-slate-500">→</span>
+                                                            <span className={point.category === 'dead' ? 'text-yellow-300' : 'text-pink-300'}>
+                                                                {point.category === 'dead' ? 'Abgestorben' : 'Boden'}
+                                                            </span>
+                                                        </div>
+                                                    </div>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => removeTwoPhaseRefinementPoint(point.id)}
+                                                        className="calibration-point-delete inline-flex items-center justify-center rounded-lg text-slate-400 hover:bg-red-950/50 hover:text-red-300"
+                                                        title="Punkt löschen"
+                                                        aria-label={`Phase-3-Punkt ${index + 1} löschen`}
+                                                    >
+                                                        <Trash2 className="h-4 w-4" />
+                                                    </button>
+                                                </div>
+
+                                                <div className="mt-2 flex items-center justify-between gap-3">
+                                                    <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                                                        Nachbarschaft / Toleranz
+                                                    </label>
+                                                    <output className="font-mono text-xs text-fuchsia-300">{point.tolerance}%</output>
+                                                </div>
+                                                <input
+                                                    type="range"
+                                                    min="0"
+                                                    max="100"
+                                                    step="1"
+                                                    value={point.tolerance}
+                                                    onChange={(event) => setTwoPhaseRefinementTolerance(point.id, event.target.value)}
+                                                    className="settings-slider mt-1 w-full rounded-lg appearance-none cursor-pointer"
+                                                    style={{
+                                                        '--slider-track': 'linear-gradient(90deg, #334155, #a21caf, #f5d0fe)',
+                                                        '--slider-thumb': '#d946ef',
+                                                        '--slider-thumb-ring': 'rgba(217, 70, 239, 0.28)'
+                                                    }}
+                                                    aria-label={`Nachbarschaftstoleranz für Phase-3-Punkt ${index + 1}`}
+                                                />
+                                                <div className="mt-1 flex justify-between text-[10px] text-slate-500">
+                                                    <span>nur Punkt</span>
+                                                    <span>gesamter verbundener Bereich</span>
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+                            <p className="text-[11px] leading-relaxed text-slate-500">
+                                Phase&nbsp;1 erkennt und schützt lebende Pflanzen. Phase&nbsp;2 trennt Boden und Abgestorben über Farbe, Struktur und Helligkeit. Phase&nbsp;3 korrigiert lokale Bereiche und schließt Lücken. „Sonstiges“ entsteht in diesem Modus nur durch den Pinsel.
+                            </p>
+                        </div>
+                    </details>
+                </div>
+            );
 
             const renderCalibrationControls = () => (
 <div className="calibration-image-controls p-4 bg-[#1e293b] border-t border-slate-700 flex flex-col gap-4 shrink-0 shadow-[0_-4px_10px_rgba(0,0,0,0.2)] z-20 custom-scrollbar">
@@ -5844,7 +7485,7 @@
                         onClick={() => !showUnclassifiedModal && setIsCalibrationOpen(false)}
                     >
                         <div 
-                            className="calibration-shell bg-white rounded-2xl shadow-2xl w-full max-w-[108rem] max-h-[90vh] flex overflow-hidden border border-slate-700/50"
+                            className={`calibration-shell ${calibrationMode === 'twoPhase' ? 'is-two-phase' : ''} bg-white rounded-2xl shadow-2xl w-full max-w-[108rem] max-h-[90vh] flex overflow-hidden border border-slate-700/50`}
                             onClick={e => e.stopPropagation()}
                             role="dialog"
                             aria-modal="true"
@@ -5896,10 +7537,28 @@
                                             }}
                                         />
                                     )}
+
+                                    {isTwoPhaseCrosshairActive && (
+                                        <div className="two-phase-crosshair" aria-hidden="true">
+                                            {twoPhaseFixPreview?.canApply && twoPhaseFixPreview.screenRadius > 2 && (
+                                                <span
+                                                    className="two-phase-crosshair-radius"
+                                                    style={{
+                                                        width: `${twoPhaseFixPreview.screenRadius * 2}px`,
+                                                        height: `${twoPhaseFixPreview.screenRadius * 2}px`,
+                                                        borderColor: twoPhaseFixPreview.target === 'dead' ? '#facc15' : '#ec4899'
+                                                    }}
+                                                />
+                                            )}
+                                            <span className="two-phase-crosshair-line is-horizontal" />
+                                            <span className="two-phase-crosshair-line is-vertical" />
+                                            <span className="two-phase-crosshair-dot" />
+                                        </div>
+                                    )}
                                 </div>
                                 
                                 {isMobileCalibration && <div className="calibration-mobile-imagebar">
-                                    <span className="calibration-mobile-hint">{pickingCategory ? 'Farbe im Bild antippen' : brushActive ? 'Pinsel aktiv · 2 Finger zoomen' : '2 Finger zoomen · ziehen verschiebt'}</span>
+                                    <span className="calibration-mobile-hint">{pickingCategory ? 'Farbe im Bild antippen' : brushActive ? 'Pinsel aktiv · 2 Finger zoomen' : isTwoPhaseCrosshairActive ? 'Stelle unter das Fadenkreuz schieben oder antippen' : '2 Finger zoomen · ziehen verschiebt'}</span>
                                     <div className="calibration-mobile-zoom">
                                         <button type="button" aria-label="Kalibrierbild verkleinern" onClick={() => changeCalibrationZoom(0.8)}>−</button>
                                         <button type="button" aria-label="Zoom und Position zurücksetzen" onClick={resetCalibrationView}>{Math.round(calibZoom * 100)}%</button>
@@ -5930,7 +7589,7 @@
                                                 onClick={handleResetTwoPhaseSettings}
                                                 className="px-3 py-1.5 rounded text-xs font-bold transition-all border bg-slate-700 text-slate-300 border-slate-600 hover:bg-slate-600"
                                             >
-                                                2-Phasen zurücksetzen
+                                                3-Phasen zurücksetzen
                                             </button>
                                         ) : (
                                             <>
@@ -5984,7 +7643,7 @@
                                     </div>
                                 </div>
                                 <div className="calibration-settings-scroll p-6 overflow-y-auto custom-scrollbar flex-1 space-y-6">
-                                    {isMobileCalibration && <details className="calibration-mobile-tools rounded-xl border border-slate-700">
+                                    {isMobileCalibration && calibrationMode !== 'twoPhase' && <details className="calibration-mobile-tools rounded-xl border border-slate-700">
                                         <summary className="p-3 text-sm font-semibold cursor-pointer">Bildwerkzeuge · Deckkraft · Pinsel</summary>
                                         {renderCalibrationControls()}
                                     </details>}
@@ -6035,518 +7694,13 @@
                                             })}
                                         </div>
                                     ) : calibrationMode === 'twoPhase' ? (
-                                        <div className="space-y-4">
-                                            <div className="rounded-xl border border-emerald-900/70 bg-emerald-950/30 p-4">
-                                                <div className="flex items-start gap-3">
-                                                    <Layers className="h-5 w-5 text-emerald-400 shrink-0 mt-0.5" />
-                                                    <div>
-                                                        <h3 className="text-sm font-bold text-emerald-300">Erst Boden trennen, dann Pflanzenzustand bewerten</h3>
-                                                        <p className="mt-1 text-xs leading-relaxed text-slate-400">
-                                                            Farbe, Helligkeit und lokale Textur werden gemeinsam ausgewertet. Der Modus ordnet jeden nicht manuell übermalten Pixel eindeutig als lebend, abgestorben oder Boden ein.
-                                                        </p>
-                                                    </div>
-                                                </div>
-                                            </div>
-
-                                            <div className="rounded-xl border border-slate-700 bg-slate-800/50 p-4">
-                                                <div className="flex items-start gap-3">
-                                                    <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-emerald-950 text-xs font-extrabold text-emerald-300">1</span>
-                                                    <div className="min-w-0 flex-1">
-                                                        <div className="flex items-start justify-between gap-3">
-                                                            <div>
-                                                                <h3 className="text-sm font-bold text-white">Pflanze von Boden trennen</h3>
-                                                                <p className="mt-1 text-[11px] leading-relaxed text-slate-400">Weiter rechts liegende, ausreichend grüne Bildpunkte gelten als lebende Pflanze und bleiben für Phase 2 geschützt.</p>
-                                                            </div>
-                                                            <output className="rounded border border-emerald-900/70 bg-slate-950 px-2 py-1 font-mono text-xs text-emerald-300">
-                                                                {twoPhaseSettings.vegetationThreshold}
-                                                            </output>
-                                                        </div>
-                                                        <div className="relative mt-3 overflow-hidden rounded-lg border border-slate-700 bg-gradient-to-r from-amber-950/80 via-slate-800 to-emerald-950/80">
-                                                            <canvas
-                                                                ref={vegetationHistogramRef}
-                                                                width="360"
-                                                                height="64"
-                                                                className="block h-16 w-full"
-                                                                aria-label="Verteilung von Boden bis Pflanze"
-                                                            />
-                                                            <span
-                                                                className="pointer-events-none absolute inset-y-0 w-0.5 -translate-x-1/2 bg-white shadow-[0_0_0_1px_rgba(15,23,42,0.7)]"
-                                                                style={{ left: `${twoPhaseSettings.vegetationThreshold}%` }}
-                                                                aria-hidden="true"
-                                                            />
-                                                        </div>
-                                                        <input
-                                                            type="range"
-                                                            min="1"
-                                                            max="99"
-                                                            step="1"
-                                                            value={twoPhaseSettings.vegetationThreshold}
-                                                            onChange={(event) => handleTwoPhaseThresholdChange('vegetationThreshold', event.target.value)}
-                                                            className="settings-slider mt-2 w-full rounded-lg appearance-none cursor-pointer"
-                                                            style={{
-                                                                '--slider-track': 'linear-gradient(90deg, #78350f, #64748b 48%, #16a34a)',
-                                                                '--slider-thumb': '#d946ef',
-                                                                '--slider-thumb-ring': 'rgba(217, 70, 239, 0.28)'
-                                                            }}
-                                                            aria-label="Grenze zwischen Boden und Pflanze"
-                                                        />
-                                                        <div className="mt-1 flex justify-between text-[10px] font-bold uppercase tracking-wider">
-                                                            <span className="text-amber-400">Boden</span>
-                                                            <span className="text-slate-500">Pflanzenähnlichkeit</span>
-                                                            <span className="text-emerald-400">Pflanze</span>
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                            </div>
-
-                                            <div className="rounded-xl border border-slate-700 bg-slate-800/50 p-4">
-                                                <div className="flex items-start gap-3">
-                                                    <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-emerald-950 text-xs font-extrabold text-emerald-300">2</span>
-                                                    <div className="min-w-0 flex-1">
-                                                        <div className="flex items-start justify-between gap-3">
-                                                            <div>
-                                                                <h3 className="text-sm font-bold text-white">Gelb–Braun-Schwelle festlegen</h3>
-                                                                <p className="mt-1 text-[11px] leading-relaxed text-slate-400">Diese Grenze wirkt nur auf Pixel, die Phase 1 nicht bereits als lebend geschützt hat.</p>
-                                                            </div>
-                                                            <output className="rounded border border-yellow-900/70 bg-slate-950 px-2 py-1 font-mono text-xs text-yellow-300">
-                                                                {twoPhaseSettings.livingThreshold}
-                                                            </output>
-                                                        </div>
-                                                        <label className="mt-3 flex items-center gap-2 text-xs font-bold text-slate-200">
-                                                            <input
-                                                                type="checkbox"
-                                                                checked={twoPhaseSettings.colorEnabled ?? true}
-                                                                onChange={(event) => handleTwoPhaseOptionChange('colorEnabled', event.target.checked)}
-                                                                className="h-4 w-4 accent-yellow-500"
-                                                            />
-                                                            Farbe berücksichtigen
-                                                        </label>
-                                                        <div className="relative mt-3 overflow-hidden rounded-lg border border-slate-700 bg-gradient-to-r from-amber-950/90 via-orange-950/60 to-yellow-900/70">
-                                                            <canvas
-                                                                ref={healthHistogramRef}
-                                                                width="360"
-                                                                height="64"
-                                                                className={`block h-16 w-full ${twoPhaseSettings.colorEnabled === false ? 'opacity-40' : ''}`}
-                                                                aria-label="Verteilung von braunem Boden bis gelblichem abgestorbenem Pflanzenmaterial"
-                                                            />
-                                                            <span
-                                                                className="pointer-events-none absolute inset-y-0 w-0.5 -translate-x-1/2 bg-white shadow-[0_0_0_1px_rgba(15,23,42,0.7)]"
-                                                                style={{ left: `${twoPhaseSettings.livingThreshold}%` }}
-                                                                aria-hidden="true"
-                                                            />
-                                                        </div>
-                                                        <input
-                                                            type="range"
-                                                            min="0"
-                                                            max="100"
-                                                            step="1"
-                                                            value={twoPhaseSettings.livingThreshold}
-                                                            onChange={(event) => handleTwoPhaseThresholdChange('livingThreshold', event.target.value)}
-                                                            disabled={twoPhaseSettings.colorEnabled === false}
-                                                            className="settings-slider mt-2 w-full rounded-lg appearance-none cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
-                                                            style={{
-                                                                '--slider-track': 'linear-gradient(90deg, #78350f, #b45309 52%, #eab308)',
-                                                                '--slider-thumb': '#d946ef',
-                                                                '--slider-thumb-ring': 'rgba(217, 70, 239, 0.28)'
-                                                            }}
-                                                            aria-label="Grenze zwischen braunem Boden und gelblichem abgestorbenem Pflanzenmaterial"
-                                                        />
-                                                        <div className="mt-1 flex justify-between text-[10px] font-bold uppercase tracking-wider">
-                                                            <span className="text-amber-700">Braun / Boden</span>
-                                                            <span className="text-slate-500">Gelb–Braun</span>
-                                                            <span className="text-yellow-400">Gelb / Abgestorben</span>
-                                                        </div>
-
-                                                        <div className="mt-4 border-t border-slate-700 pt-3">
-                                                            <div className="mb-3">
-                                                                <div className="flex flex-wrap items-center justify-between gap-2">
-                                                                    <label className="flex items-center gap-2 text-xs font-bold text-slate-200">
-                                                                        <input
-                                                                            type="checkbox"
-                                                                            checked={twoPhaseSettings.roughnessEnabled ?? true}
-                                                                            onChange={(event) => handleTwoPhaseOptionChange('roughnessEnabled', event.target.checked)}
-                                                                            className="h-4 w-4 accent-amber-600"
-                                                                        />
-                                                                        Rauigkeit berücksichtigen
-                                                                    </label>
-                                                                    <output className="font-mono text-xs text-amber-300">{twoPhaseSettings.roughnessThreshold}%</output>
-                                                                </div>
-                                                                <input
-                                                                    type="range"
-                                                                    min="0"
-                                                                    max="100"
-                                                                    step="1"
-                                                                    value={twoPhaseSettings.roughnessThreshold}
-                                                                    onChange={(event) => handleTwoPhaseThresholdChange('roughnessThreshold', event.target.value)}
-                                                                    disabled={twoPhaseSettings.roughnessEnabled === false}
-                                                                    className="settings-slider mt-1 w-full rounded-lg appearance-none cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
-                                                                    style={{
-                                                                        '--slider-track': 'linear-gradient(90deg, #d6d3d1, #a16207, #0f172a)',
-                                                                        '--slider-thumb': '#a16207',
-                                                                        '--slider-thumb-ring': 'rgba(161, 98, 7, 0.28)'
-                                                                    }}
-                                                                    aria-label="Mindest-Rauigkeit für abgestorbenes Pflanzenmaterial"
-                                                                />
-                                                                <div className="mt-1 flex justify-between text-[10px] text-slate-500">
-                                                                    <span>kein Einfluss</span>
-                                                                    <span>starker Einfluss</span>
-                                                                </div>
-                                                                <p className="mt-1 text-[10px] leading-relaxed text-slate-500">
-                                                                    0&nbsp;% = kein Einfluss. Je höher der Wert, desto mehr raue bzw. strukturierte Pixel werden als Abgestorben berücksichtigt.
-                                                                </p>
-                                                            </div>
-
-                                                            <div>
-                                                                <div className="flex flex-wrap items-center justify-between gap-2">
-                                                                    <label className="flex items-center gap-2 text-xs font-bold text-slate-200">
-                                                                        <input
-                                                                            type="checkbox"
-                                                                            checked={twoPhaseSettings.fibrousnessEnabled ?? true}
-                                                                            onChange={(event) => handleTwoPhaseOptionChange('fibrousnessEnabled', event.target.checked)}
-                                                                            className="h-4 w-4 accent-yellow-500"
-                                                                        />
-                                                                        Faserigkeit berücksichtigen
-                                                                    </label>
-                                                                    <output className="font-mono text-xs text-yellow-300">{twoPhaseSettings.fibrousnessThreshold}%</output>
-                                                                </div>
-                                                                <input
-                                                                    type="range"
-                                                                    min="0"
-                                                                    max="100"
-                                                                    step="1"
-                                                                    value={twoPhaseSettings.fibrousnessThreshold}
-                                                                    onChange={(event) => handleTwoPhaseThresholdChange('fibrousnessThreshold', event.target.value)}
-                                                                    disabled={twoPhaseSettings.fibrousnessEnabled === false}
-                                                                    className="settings-slider mt-1 w-full rounded-lg appearance-none cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
-                                                                    style={{
-                                                                        '--slider-track': 'linear-gradient(90deg, #475569, #ca8a04, #fef08a)',
-                                                                        '--slider-thumb': '#eab308',
-                                                                        '--slider-thumb-ring': 'rgba(234, 179, 8, 0.28)'
-                                                                    }}
-                                                                    aria-label="Mindest-Faserigkeit für abgestorbenes Pflanzenmaterial"
-                                                                />
-                                                                <div className="mt-1 flex justify-between text-[10px] text-slate-500">
-                                                                    <span>kein Einfluss</span>
-                                                                    <span>starker Einfluss</span>
-                                                                </div>
-                                                                <p className="mt-1 text-[10px] leading-relaxed text-slate-500">
-                                                                    0&nbsp;% = kein Einfluss. Je höher der Wert, desto mehr faserige bzw. halmartige Pixel werden als Abgestorben berücksichtigt.
-                                                                </p>
-                                                            </div>
-
-                                                            <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-700 bg-slate-900/60 p-3">
-                                                                <div>
-                                                                    <div className="text-xs font-bold text-slate-200">Merkmale kombinieren</div>
-                                                                    <div className="mt-0.5 text-[10px] text-slate-500">
-                                                                        Gilt gemeinsam für alle aktivierten Merkmale: Farbe, Rauigkeit und Faserigkeit.
-                                                                    </div>
-                                                                </div>
-                                                                <select
-                                                                    value={twoPhaseSettings.featureCombinationMode ?? twoPhaseSettings.textureCombinationMode ?? 'or'}
-                                                                    onChange={(event) => handleTwoPhaseOptionChange('featureCombinationMode', event.target.value)}
-                                                                    className="rounded border border-slate-600 bg-slate-950 px-2 py-1 text-xs text-slate-200"
-                                                                    aria-label="Verknüpfung der aktiven Phase-2-Merkmale"
-                                                                >
-                                                                    <option value="or">ODER – eines reicht</option>
-                                                                    <option value="and">UND – alle müssen passen</option>
-                                                                    <option value="majority">MEHRHEIT – mehr als die Hälfte</option>
-                                                                </select>
-                                                            </div>
-
-                                                            <p className="mt-2 text-[10px] leading-relaxed text-slate-500">
-                                                                Jedes deaktivierte Merkmal wird vollständig ignoriert. Bei Rauigkeit und Faserigkeit bedeutet 0&nbsp;% ebenfalls keinen Beitrag zu „Abgestorben“; mit steigendem Wert kommen zunehmend passende Pixel hinzu. Sind alle Merkmale wirkungslos, bleiben die Pixel Boden.
-                                                            </p>
-
-                                                            <div className="mt-4 border-t border-slate-700 pt-3">
-                                                                <h4 className="text-xs font-bold text-slate-200">Helligkeits-Zuweisung</h4>
-                                                                <p className="mt-1 text-[10px] leading-relaxed text-slate-500">
-                                                                    Optional: sehr dunkle oder sehr helle Pixel überschreiben die vorherige Phase-2-Zuordnung und können sie gezielt auf Boden oder Abgestorben setzen. Bereits in Phase 1 erkanntes Lebend bleibt geschützt.
-                                                                </p>
-
-                                                                <div className="mt-3 rounded-lg border border-slate-700 bg-slate-900/60 p-3">
-                                                                    <div className="flex flex-wrap items-center justify-between gap-2">
-                                                                        <label className="flex items-center gap-2 text-xs font-bold text-slate-200">
-                                                                            <input
-                                                                                type="checkbox"
-                                                                                checked={twoPhaseSettings.darkBrightnessEnabled}
-                                                                                onChange={(event) => handleTwoPhaseOptionChange('darkBrightnessEnabled', event.target.checked)}
-                                                                                className="h-4 w-4 accent-slate-500"
-                                                                            />
-                                                                            Dunkle Pixel direkt zuordnen
-                                                                        </label>
-                                                                        <select
-                                                                            value={twoPhaseSettings.darkBrightnessCategory}
-                                                                            onChange={(event) => handleTwoPhaseOptionChange('darkBrightnessCategory', event.target.value)}
-                                                                            disabled={!twoPhaseSettings.darkBrightnessEnabled}
-                                                                            className="rounded border border-slate-600 bg-slate-950 px-2 py-1 text-xs text-slate-200 disabled:cursor-not-allowed disabled:opacity-50"
-                                                                            aria-label="Kategorie für dunkle Pixel"
-                                                                        >
-                                                                            <option value="soil">Boden</option>
-                                                                            <option value="dead">Abgestorben</option>
-                                                                        </select>
-                                                                    </div>
-                                                                    <div className="mt-2 flex items-center justify-between gap-3">
-                                                                        <span className="text-[10px] text-slate-500">Bis zu dieser Helligkeit</span>
-                                                                        <output className="font-mono text-xs text-slate-300">{twoPhaseSettings.darkBrightnessThreshold}%</output>
-                                                                    </div>
-                                                                    <input
-                                                                        type="range"
-                                                                        min="0"
-                                                                        max="100"
-                                                                        step="1"
-                                                                        value={twoPhaseSettings.darkBrightnessThreshold}
-                                                                        onChange={(event) => handleTwoPhaseThresholdChange('darkBrightnessThreshold', event.target.value)}
-                                                                        disabled={!twoPhaseSettings.darkBrightnessEnabled}
-                                                                        className="settings-slider mt-1 w-full rounded-lg appearance-none cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
-                                                                        style={{
-                                                                            '--slider-track': 'linear-gradient(90deg, #020617, #475569, #f8fafc)',
-                                                                            '--slider-thumb': '#64748b',
-                                                                            '--slider-thumb-ring': 'rgba(100, 116, 139, 0.28)'
-                                                                        }}
-                                                                        aria-label="Maximale Helligkeit für direkte Dunkel-Zuweisung"
-                                                                    />
-                                                                    <div className="mt-1 flex justify-between text-[10px] text-slate-500">
-                                                                        <span>Dunkel</span>
-                                                                        <span>Hell</span>
-                                                                    </div>
-                                                                </div>
-
-                                                                <div className="mt-3 rounded-lg border border-slate-700 bg-slate-900/60 p-3">
-                                                                    <div className="flex flex-wrap items-center justify-between gap-2">
-                                                                        <label className="flex items-center gap-2 text-xs font-bold text-slate-200">
-                                                                            <input
-                                                                                type="checkbox"
-                                                                                checked={twoPhaseSettings.brightBrightnessEnabled}
-                                                                                onChange={(event) => handleTwoPhaseOptionChange('brightBrightnessEnabled', event.target.checked)}
-                                                                                className="h-4 w-4 accent-slate-300"
-                                                                            />
-                                                                            Helle Pixel direkt zuordnen
-                                                                        </label>
-                                                                        <select
-                                                                            value={twoPhaseSettings.brightBrightnessCategory}
-                                                                            onChange={(event) => handleTwoPhaseOptionChange('brightBrightnessCategory', event.target.value)}
-                                                                            disabled={!twoPhaseSettings.brightBrightnessEnabled}
-                                                                            className="rounded border border-slate-600 bg-slate-950 px-2 py-1 text-xs text-slate-200 disabled:cursor-not-allowed disabled:opacity-50"
-                                                                            aria-label="Kategorie für helle Pixel"
-                                                                        >
-                                                                            <option value="dead">Abgestorben</option>
-                                                                            <option value="soil">Boden</option>
-                                                                        </select>
-                                                                    </div>
-                                                                    <div className="mt-2 flex items-center justify-between gap-3">
-                                                                        <span className="text-[10px] text-slate-500">Ab dieser Helligkeit</span>
-                                                                        <output className="font-mono text-xs text-slate-300">{twoPhaseSettings.brightBrightnessThreshold}%</output>
-                                                                    </div>
-                                                                    <input
-                                                                        type="range"
-                                                                        min="0"
-                                                                        max="100"
-                                                                        step="1"
-                                                                        value={twoPhaseSettings.brightBrightnessThreshold}
-                                                                        onChange={(event) => handleTwoPhaseThresholdChange('brightBrightnessThreshold', event.target.value)}
-                                                                        disabled={!twoPhaseSettings.brightBrightnessEnabled}
-                                                                        className="settings-slider mt-1 w-full rounded-lg appearance-none cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
-                                                                        style={{
-                                                                            '--slider-track': 'linear-gradient(90deg, #020617, #94a3b8, #f8fafc)',
-                                                                            '--slider-thumb': '#e2e8f0',
-                                                                            '--slider-thumb-ring': 'rgba(226, 232, 240, 0.28)'
-                                                                        }}
-                                                                        aria-label="Minimale Helligkeit für direkte Hell-Zuweisung"
-                                                                    />
-                                                                    <div className="mt-1 flex justify-between text-[10px] text-slate-500">
-                                                                        <span>Dunkel</span>
-                                                                        <span>Hell</span>
-                                                                    </div>
-                                                                </div>
-                                                            </div>
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                            </div>
-
-                                            <div className="rounded-xl border border-slate-700 bg-slate-800/50 p-4">
-                                                <div className="flex items-start gap-3">
-                                                    <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-fuchsia-950 text-xs font-extrabold text-fuchsia-300">3</span>
-                                                    <div className="min-w-0 flex-1">
-                                                        <div className="flex flex-wrap items-start justify-between gap-3">
-                                                            <div>
-                                                                <h3 className="text-sm font-bold text-white">Lokale Boden-/Abgestorben-Korrektur</h3>
-                                                                <p className="mt-1 text-[11px] leading-relaxed text-slate-400">
-                                                                    Setze einen Punkt auf eine falsch zugeordnete Boden- oder Abgestorben-Fläche. Nur direkt zusammenhängende Nachbarpixel mit derselben Phase-2-Ausgangskategorie werden umgeordnet.
-                                                                </p>
-                                                            </div>
-                                                            {twoPhaseRefinementPoints.length > 0 && (
-                                                                <button
-                                                                    type="button"
-                                                                    onClick={clearTwoPhaseRefinementPoints}
-                                                                    className="px-2.5 py-1.5 rounded-lg text-xs font-bold border border-slate-600 bg-slate-900 text-slate-300 hover:bg-slate-700"
-                                                                >
-                                                                    Punkte löschen
-                                                                </button>
-                                                            )}
-                                                        </div>
-
-                                                        <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2">
-                                                            <button
-                                                                type="button"
-                                                                onClick={() => {
-                                                                    setPickingCategory(prev => prev === 'dead' ? null : 'dead');
-                                                                    setBrushActive(false);
-                                                                    setError(null);
-                                                                }}
-                                                                className={`min-h-[42px] rounded-lg border px-3 py-2 text-xs font-bold flex items-center justify-center gap-2 transition-all ${
-                                                                    pickingCategory === 'dead'
-                                                                        ? 'bg-yellow-500 text-slate-950 border-yellow-300 ring-1 ring-yellow-300'
-                                                                        : 'bg-slate-900 text-yellow-300 border-yellow-800 hover:bg-yellow-950/40'
-                                                                }`}
-                                                            >
-                                                                <Plus className="h-3.5 w-3.5" />
-                                                                {pickingCategory === 'dead' ? 'Bodenstelle im Bild wählen…' : 'Als Abgestorben markieren'}
-                                                            </button>
-
-                                                            <button
-                                                                type="button"
-                                                                onClick={() => {
-                                                                    setPickingCategory(prev => prev === 'soil' ? null : 'soil');
-                                                                    setBrushActive(false);
-                                                                    setError(null);
-                                                                }}
-                                                                className={`min-h-[42px] rounded-lg border px-3 py-2 text-xs font-bold flex items-center justify-center gap-2 transition-all ${
-                                                                    pickingCategory === 'soil'
-                                                                        ? 'bg-pink-500 text-white border-pink-300 ring-1 ring-pink-300'
-                                                                        : 'bg-slate-900 text-pink-300 border-pink-800 hover:bg-pink-950/40'
-                                                                }`}
-                                                            >
-                                                                <Plus className="h-3.5 w-3.5" />
-                                                                {pickingCategory === 'soil' ? 'Abgestorbene Stelle im Bild wählen…' : 'Als Boden markieren'}
-                                                            </button>
-                                                        </div>
-
-                                                        <p className="mt-2 text-[10px] leading-relaxed text-slate-500">
-                                                            Toleranz 0&nbsp;% ändert nur den angeklickten Pixel. Mit höherer Toleranz wächst die Korrektur räumlich über direkt angrenzende Pixel derselben ursprünglichen Kategorie. Lebend wird nie verändert.
-                                                        </p>
-
-                                                        <div className="mt-4 border-t border-slate-700 pt-3">
-                                                            <div className="flex flex-wrap items-start justify-between gap-3">
-                                                                <div>
-                                                                    <h4 className="text-xs font-bold text-slate-200">Weichzeichnung / Lücken schließen</h4>
-                                                                    <p className="mt-1 text-[10px] leading-relaxed text-slate-500">
-                                                                        Schließt kleine Zwischenräume zwischen gleich klassifizierten Bereichen. Lebend bleibt eine harte Grenze.
-                                                                    </p>
-                                                                </div>
-                                                                <select
-                                                                    value={twoPhaseSmoothing.category}
-                                                                    onChange={(event) => handleTwoPhaseSmoothingCategoryChange(event.target.value)}
-                                                                    className="rounded border border-slate-600 bg-slate-950 px-2 py-1 text-xs text-slate-200"
-                                                                    aria-label="Kategorie für Phase-3-Weichzeichnung"
-                                                                >
-                                                                    <option value="none">Aus</option>
-                                                                    <option value="dead">Abgestorben</option>
-                                                                    <option value="soil">Boden</option>
-                                                                </select>
-                                                            </div>
-
-                                                            <div className="mt-3">
-                                                                <div className="flex items-center justify-between gap-3">
-                                                                    <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
-                                                                        Radius
-                                                                    </label>
-                                                                    <output className="font-mono text-xs text-fuchsia-300">
-                                                                        {twoPhaseSmoothing.radius}px
-                                                                    </output>
-                                                                </div>
-                                                                <input
-                                                                    type="range"
-                                                                    min="0"
-                                                                    max="50"
-                                                                    step="1"
-                                                                    value={twoPhaseSmoothing.radius}
-                                                                    onChange={(event) => handleTwoPhaseSmoothingRadiusChange(event.target.value)}
-                                                                    disabled={twoPhaseSmoothing.category === 'none'}
-                                                                    className="settings-slider mt-1 w-full rounded-lg appearance-none cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
-                                                                    style={{
-                                                                        '--slider-track': 'linear-gradient(90deg, #334155, #a21caf, #f5d0fe)',
-                                                                        '--slider-thumb': '#d946ef',
-                                                                        '--slider-thumb-ring': 'rgba(217, 70, 239, 0.28)'
-                                                                    }}
-                                                                    aria-label="Radius für Phase-3-Lückenschluss"
-                                                                />
-                                                                <div className="mt-1 flex justify-between text-[10px] text-slate-500">
-                                                                    <span>keine Lücke</span>
-                                                                    <span>größere Lücken schließen</span>
-                                                                </div>
-                                                                <p className="mt-1 text-[10px] leading-relaxed text-slate-500">
-                                                                    Beispiel „Abgestorben“: Bodenpixel werden nur dann umgewandelt, wenn sie zwischen abgestorbenen Bereichen liegen und die Lücke zum eingestellten Radius passt.
-                                                                </p>
-                                                            </div>
-                                                        </div>
-
-                                                        {twoPhaseRefinementPoints.length > 0 && (
-                                                            <div className="mt-3 space-y-2">
-                                                                {twoPhaseRefinementPoints.map((point, index) => (
-                                                                    <div key={point.id} className="calibration-point-row rounded-lg border border-slate-700 bg-slate-900/60 p-2.5">
-                                                                        <div className="flex items-center gap-2">
-                                                                            <div
-                                                                                className="h-6 w-6 shrink-0 rounded-full border border-white/10"
-                                                                                style={{ backgroundColor: point.rgb }}
-                                                                            ></div>
-                                                                            <div className="min-w-0 flex-1">
-                                                                                <div className="text-xs font-bold text-slate-200">
-                                                                                    Punkt {index + 1}: {point.sourceCategory === 'soil' ? 'Boden' : 'Abgestorben'}
-                                                                                    <span className="mx-1.5 text-slate-500">→</span>
-                                                                                    <span className={point.category === 'dead' ? 'text-yellow-300' : 'text-pink-300'}>
-                                                                                        {point.category === 'dead' ? 'Abgestorben' : 'Boden'}
-                                                                                    </span>
-                                                                                </div>
-                                                                            </div>
-                                                                            <button
-                                                                                type="button"
-                                                                                onClick={() => removeTwoPhaseRefinementPoint(point.id)}
-                                                                                className="calibration-point-delete inline-flex items-center justify-center rounded-lg text-slate-400 hover:bg-red-950/50 hover:text-red-300"
-                                                                                title="Punkt löschen"
-                                                                                aria-label={`Phase-3-Punkt ${index + 1} löschen`}
-                                                                            >
-                                                                                <Trash2 className="h-4 w-4" />
-                                                                            </button>
-                                                                        </div>
-
-                                                                        <div className="mt-2 flex items-center justify-between gap-3">
-                                                                            <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
-                                                                                Nachbarschaft / Toleranz
-                                                                            </label>
-                                                                            <output className="font-mono text-xs text-fuchsia-300">{point.tolerance}%</output>
-                                                                        </div>
-                                                                        <input
-                                                                            type="range"
-                                                                            min="0"
-                                                                            max="100"
-                                                                            step="1"
-                                                                            value={point.tolerance}
-                                                                            onChange={(event) => setTwoPhaseRefinementTolerance(point.id, event.target.value)}
-                                                                            className="settings-slider mt-1 w-full rounded-lg appearance-none cursor-pointer"
-                                                                            style={{
-                                                                                '--slider-track': 'linear-gradient(90deg, #334155, #a21caf, #f5d0fe)',
-                                                                                '--slider-thumb': '#d946ef',
-                                                                                '--slider-thumb-ring': 'rgba(217, 70, 239, 0.28)'
-                                                                            }}
-                                                                            aria-label={`Nachbarschaftstoleranz für Phase-3-Punkt ${index + 1}`}
-                                                                        />
-                                                                        <div className="mt-1 flex justify-between text-[10px] text-slate-500">
-                                                                            <span>nur Punkt</span>
-                                                                            <span>gesamter verbundener Bereich</span>
-                                                                        </div>
-                                                                    </div>
-                                                                ))}
-                                                            </div>
-                                                        )}
-                                                    </div>
-                                                </div>
-                                            </div>
-
-                                            <div className="rounded-lg border border-slate-700 bg-slate-900/70 px-3 py-2 text-[11px] leading-relaxed text-slate-400">
-                                                Phase&nbsp;1 erkennt und schützt lebende Pflanzen. Phase&nbsp;2 trennt Boden und Abgestorben über die aktivierten Merkmale und Helligkeits-Overrides. Phase&nbsp;3 korrigiert anschließend lokale Boden-/Abgestorben-Bereiche anhand gesetzter Punkte und kann zusätzlich kleine Lücken innerhalb einer gewählten Kategorie schließen. „Sonstiges“ wird in diesem Modus nur durch manuelle Korrekturen erzeugt.
-                                            </div>
-                                        </div>
+                                        <>
+                                            {renderTwoPhaseAssistant()}
+                                            {isMobileCalibration && <details className="calibration-mobile-tools rounded-xl border border-slate-700">
+                                                <summary className="p-3 text-sm font-semibold cursor-pointer">Bildwerkzeuge · Deckkraft · Pinsel</summary>
+                                                {renderCalibrationControls()}
+                                            </details>}
+                                        </>
                                     ) : (
                                         <>
                                             {categories.map(cat => (
