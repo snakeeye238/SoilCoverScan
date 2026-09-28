@@ -248,11 +248,11 @@
         }
 
         @media (max-width: 767px) {
-            .calibration-overlay {
+            :root .calibration-overlay {
                 align-items: stretch;
                 padding: 0;
             }
-            .calibration-shell {
+            :root .calibration-shell {
                 width: 100%;
                 height: 100vh;
                 height: 100dvh;
@@ -260,7 +260,7 @@
                 border-radius: 0;
                 flex-direction: column;
             }
-            .calibration-image-panel {
+            :root .calibration-image-panel {
                 width: 100%;
                 height: 47vh;
                 height: 47dvh;
@@ -269,10 +269,10 @@
                 border-right: 0;
                 border-bottom: 1px solid #334155;
             }
-            .calibration-image-stage {
+            :root .calibration-image-stage {
                 min-height: 170px;
             }
-            .calibration-image-controls {
+            :root .calibration-image-controls {
                 max-height: 21vh;
                 max-height: 21dvh;
                 overflow-y: auto;
@@ -280,143 +280,143 @@
                 gap: 0.5rem;
                 -webkit-overflow-scrolling: touch;
             }
-            .calibration-settings-panel {
+            :root .calibration-settings-panel {
                 width: 100%;
                 flex: 1 1 auto;
                 min-height: 0;
             }
-            .calibration-header {
+            :root .calibration-header {
                 padding: 0.625rem 0.75rem;
                 padding-top: max(0.625rem, var(--safe-area-top));
                 gap: 0.5rem;
                 flex-wrap: wrap;
             }
-            .calibration-header h2 {
+            :root .calibration-header h2 {
                 font-size: 1rem;
             }
-            .calibration-header-actions {
+            :root .calibration-header-actions {
                 flex: 1 1 auto;
                 justify-content: flex-end;
                 flex-wrap: wrap;
                 gap: 0.25rem;
             }
-            .calibration-header-actions > button {
+            :root .calibration-header-actions > button {
                 min-height: 40px;
             }
-            .calibration-mode-tabs {
+            :root .calibration-mode-tabs {
                 padding: 0.5rem;
             }
-            .calibration-mode-tabs button {
+            :root .calibration-mode-tabs button {
                 min-height: 42px;
             }
-            .calibration-settings-scroll {
+            :root .calibration-settings-scroll {
                 padding: 0.75rem;
             }
-            .calibration-footer {
+            :root .calibration-footer {
                 padding: 0.625rem 0.75rem;
                 padding-bottom: max(0.625rem, var(--safe-area-bottom));
             }
-            .calibration-footer button {
+            :root .calibration-footer button {
                 width: 100%;
                 min-height: 46px;
             }
-            .calibration-toolbar-row {
+            :root .calibration-toolbar-row {
                 align-items: stretch;
                 flex-direction: column;
                 gap: 0.5rem;
             }
-            .calibration-toolbar-actions {
+            :root .calibration-toolbar-actions {
                 width: 100%;
                 justify-content: space-between;
                 gap: 0.375rem;
             }
-            .calibration-opacity {
+            :root .calibration-opacity {
                 width: 100%;
                 justify-content: space-between;
             }
-            .calibration-opacity input {
+            :root .calibration-opacity input {
                 flex: 1 1 auto;
                 width: auto;
             }
-            .calibration-zoom-controls {
+            :root .calibration-zoom-controls {
                 display: flex;
             }
-            .calibration-brush-row {
+            :root .calibration-brush-row {
                 align-items: stretch;
                 flex-direction: column;
                 gap: 0.5rem;
             }
-            .calibration-brush-size {
+            :root .calibration-brush-size {
                 width: 100%;
                 padding-left: 0;
                 padding-right: 0;
             }
-            .calibration-category-grid {
+            :root .calibration-category-grid {
                 grid-template-columns: repeat(2, minmax(0, 1fr));
             }
-            .calibration-category-grid button {
+            :root .calibration-category-grid button {
                 min-height: 42px;
             }
-            .calibration-point-row {
+            :root .calibration-point-row {
                 align-items: stretch;
                 flex-wrap: wrap;
             }
-            .calibration-point-controls {
+            :root .calibration-point-controls {
                 min-width: 0;
                 width: calc(100% - 2.5rem);
             }
-            .calibration-point-controls button {
+            :root .calibration-point-controls button {
                 width: 36px;
                 height: 36px;
                 flex: none;
             }
-            .calibration-point-delete {
+            :root .calibration-point-delete {
                 width: 40px;
                 height: 40px;
             }
-            .image-modal-toolbar {
+            :root .image-modal-toolbar {
                 padding: max(0.5rem, var(--safe-area-top)) max(0.5rem, var(--safe-area-right)) 0.5rem max(0.5rem, var(--safe-area-left));
                 align-items: flex-start;
                 gap: 0.5rem;
             }
-            .image-modal-toolbar-left {
+            :root .image-modal-toolbar-left {
                 min-width: 0;
                 max-width: calc(100vw - 4.5rem);
                 overflow-x: auto;
                 padding-bottom: 0.25rem;
             }
-            .image-modal-stage {
+            :root .image-modal-stage {
                 width: 100%;
                 height: 100%;
                 padding-top: 4.5rem;
                 padding-bottom: calc(4rem + var(--safe-area-bottom));
             }
-            .image-modal-content,
-            .image-modal-content img {
+            :root .image-modal-content,
+            :root .image-modal-content img {
                 max-width: 100vw;
                 max-height: calc(100dvh - 8.5rem);
             }
-            .crop-actions {
+            :root .crop-actions {
                 bottom: max(0.75rem, var(--safe-area-bottom));
                 width: calc(100% - 1.5rem);
                 justify-content: center;
             }
-            .crop-actions button {
+            :root .crop-actions button {
                 min-height: 44px;
                 flex: 1 1 0;
             }
-            .mobile-modal-panel {
+            :root .mobile-modal-panel {
                 max-height: calc(100dvh - 1rem);
                 padding: 1rem;
             }
         }
 
         @media (max-width: 950px) and (orientation: landscape) {
-            .calibration-overlay {
+            :root .calibration-overlay {
                 align-items: stretch;
                 padding: 0;
             }
-            .calibration-shell {
+            :root .calibration-shell {
                 width: 100%;
                 height: 100vh;
                 height: 100dvh;
@@ -424,128 +424,128 @@
                 border-radius: 0;
                 flex-direction: row;
             }
-            .calibration-image-panel {
+            :root .calibration-image-panel {
                 width: 52%;
                 height: 100%;
                 min-height: 0;
                 border-right: 1px solid #334155;
                 border-bottom: 0;
             }
-            .calibration-settings-panel {
+            :root .calibration-settings-panel {
                 width: 48%;
                 height: 100%;
                 min-height: 0;
             }
-            .calibration-image-controls {
+            :root .calibration-image-controls {
                 max-height: 43vh;
                 max-height: 43dvh;
             }
-            .calibration-header {
+            :root .calibration-header {
                 padding: 0.5rem 0.625rem;
                 padding-top: max(0.5rem, var(--safe-area-top));
                 gap: 0.375rem;
                 flex-wrap: wrap;
             }
-            .calibration-header h2 {
+            :root .calibration-header h2 {
                 font-size: 1rem;
             }
-            .calibration-header-actions {
+            :root .calibration-header-actions {
                 flex: 1 1 auto;
                 justify-content: flex-end;
                 flex-wrap: wrap;
                 gap: 0.25rem;
             }
-            .calibration-header-actions > button {
+            :root .calibration-header-actions > button {
                 min-height: 38px;
             }
-            .calibration-mode-tabs {
+            :root .calibration-mode-tabs {
                 padding: 0.375rem;
             }
-            .calibration-settings-scroll {
+            :root .calibration-settings-scroll {
                 padding: 0.625rem;
             }
-            .calibration-footer {
+            :root .calibration-footer {
                 padding: 0.5rem 0.625rem;
                 padding-bottom: max(0.5rem, var(--safe-area-bottom));
             }
-            .calibration-footer button {
+            :root .calibration-footer button {
                 width: 100%;
                 min-height: 42px;
             }
-            .calibration-toolbar-row {
+            :root .calibration-toolbar-row {
                 align-items: stretch;
                 flex-direction: column;
                 gap: 0.375rem;
             }
-            .calibration-toolbar-actions {
+            :root .calibration-toolbar-actions {
                 width: 100%;
                 justify-content: space-between;
             }
-            .calibration-opacity {
+            :root .calibration-opacity {
                 width: 100%;
                 justify-content: space-between;
             }
-            .calibration-opacity input {
+            :root .calibration-opacity input {
                 flex: 1 1 auto;
                 width: auto;
             }
-            .calibration-brush-row {
+            :root .calibration-brush-row {
                 align-items: stretch;
                 flex-direction: column;
                 gap: 0.375rem;
             }
-            .calibration-brush-size {
+            :root .calibration-brush-size {
                 width: 100%;
                 padding-left: 0;
                 padding-right: 0;
             }
-            .calibration-category-grid {
+            :root .calibration-category-grid {
                 grid-template-columns: repeat(2, minmax(0, 1fr));
             }
         }
 
         @media (pointer: coarse) {
-            .touch-target {
+            :root .touch-target {
                 min-width: 44px;
                 min-height: 44px;
             }
-            .calibration-zoom-controls {
+            :root .calibration-zoom-controls {
                 display: flex;
             }
-            input[type=range]::-webkit-slider-thumb {
+            :root input[type=range]::-webkit-slider-thumb {
                 height: 24px;
                 width: 24px;
                 margin-top: -10px;
             }
-            input[type=range]::-moz-range-thumb {
+            :root input[type=range]::-moz-range-thumb {
                 height: 24px;
                 width: 24px;
             }
-            input[type=range].settings-slider::-webkit-slider-thumb {
+            :root input[type=range].settings-slider::-webkit-slider-thumb {
                 height: 24px;
                 width: 24px;
                 margin-top: -9px;
             }
-            input[type=range].settings-slider::-moz-range-thumb {
+            :root input[type=range].settings-slider::-moz-range-thumb {
                 height: 24px;
                 width: 24px;
             }
-            input[type=range].dual-range-input::-webkit-slider-thumb {
+            :root input[type=range].dual-range-input::-webkit-slider-thumb {
                 height: 26px;
                 width: 26px;
                 margin-top: -9px;
             }
-            input[type=range].dual-range-input::-moz-range-thumb {
+            :root input[type=range].dual-range-input::-moz-range-thumb {
                 height: 26px;
                 width: 26px;
             }
-            .dual-range-control {
+            :root .dual-range-control {
                 height: 40px;
             }
-            .dual-range-track {
+            :root .dual-range-track {
                 top: 16px;
             }
-            input[type=range].dual-range-input {
+            :root input[type=range].dual-range-input {
                 height: 40px;
             }
         }
@@ -554,51 +554,52 @@
         /* v6.30: photo stays visible; one scroll area for all mobile settings. */
         .calibration-settings-body { display: flex; flex-direction: column; flex: 1; min-height: 0; }
         @media (max-width: 950px) {
-            .calibration-overlay { padding: 0; align-items: stretch; }
-            .calibration-shell { width: 100%; height: 100vh; height: 100dvh; max-height: none; border: 0; border-radius: 0; flex-direction: column; }
-            .calibration-image-panel { position: relative; width: 100%; height: 50%; min-height: 0; flex: 0 0 50%; border: 0; border-bottom: 1px solid #475569; padding-top: var(--safe-area-top); }
-            .calibration-image-stage { min-height: 0; width: 100%; height: 100%; flex: 1; }
-            .calibration-settings-panel { width: 100%; height: auto; flex: 1; min-height: 0; }
-            .calibration-settings-panel > .absolute { position: fixed; z-index: 60; }
-            .calibration-settings-body { display: block; overflow-y: auto; overscroll-behavior-y: contain; -webkit-overflow-scrolling: touch; scrollbar-width: thin; scrollbar-color: #64748b #0f172a; }
-            .calibration-settings-scroll { overflow: visible; padding: 12px; }
-            .calibration-header { padding: 8px 12px; flex-wrap: nowrap; }
-            .calibration-header h2 { font-size: 15px; }
-            .calibration-header-actions { flex-wrap: nowrap; }
-            .calibration-header-actions > button { min-height: 44px; }
-            .calibration-header-actions > button:last-child { display: none; }
-            .calibration-mode-tabs { padding: 8px 12px; }
-            .calibration-mode-tabs button { min-height: 44px; font-size: 12px; }
-            .calibration-mode-tabs svg { flex-shrink: 0; }
-            .calibration-footer { padding: 8px 12px max(8px, var(--safe-area-bottom)); }
-            .calibration-footer button { width: 100%; min-height: 44px; }
-            .calibration-image-controls { padding: 10px; max-height: none; overflow: visible; gap: 10px; }
-            .calibration-toolbar-row { flex-direction: column; gap: 10px; }
-            .calibration-zoom-controls { display: none; }
-            .calibration-opacity { width: 100%; }
-            .calibration-opacity input { flex: 1; min-width: 0; }
-            .calibration-mobile-imagebar { position: absolute; inset: 0; pointer-events: none; z-index: 25; }
-            .calibration-mobile-hint { position: absolute; left: max(12px, var(--safe-area-left)); bottom: 10px; color: #e2e8f0; background: #0f172ae8; padding: 6px 9px; border-radius: 8px; font-size: 11px; }
-            .calibration-mobile-zoom { position: absolute; left: max(10px, var(--safe-area-left)); top: max(10px, var(--safe-area-top)); display: flex; background: #0f172ae8; border: 1px solid #475569; border-radius: 12px; pointer-events: auto; color: white; overflow: hidden; }
-            .calibration-mobile-zoom button { min-width: 44px; min-height: 44px; padding: 0 8px; font-size: 20px; touch-action: manipulation; }
-            .calibration-mobile-zoom button:nth-child(2) { font-size: 12px; font-variant-numeric: tabular-nums; }
-            .calibration-mobile-close { position: absolute; right: max(10px, var(--safe-area-right)); top: max(10px, var(--safe-area-top)); width: 44px; height: 44px; font-size: 26px; color: white; background: #0f172ae8; border: 1px solid #475569; border-radius: 12px; pointer-events: auto; }
-            .calibration-settings-panel input[type=range] { min-height: 44px; }
-            .calibration-settings-panel input[type=range]::-webkit-slider-thumb { width: 24px; height: 24px; margin-top: -10px; }
-            .calibration-settings-panel input[type=range].settings-slider::-webkit-slider-thumb,
-            .calibration-settings-panel input[type=range].dual-range-input::-webkit-slider-thumb { margin-top: -9px; }
-            .calibration-settings-panel input[type=range]::-moz-range-thumb { width: 24px; height: 24px; }
-            .calibration-settings-panel .dual-range-control { height: 44px; }
-            .calibration-settings-panel .dual-range-track { top: 18px; }
-            .calibration-settings-panel select, .calibration-settings-panel input[type=number] { font-size: 16px; min-height: 40px; }
+            :root .calibration-overlay { padding: 0; align-items: stretch; }
+            :root .calibration-shell { width: 100%; height: 100vh; height: 100dvh; max-height: none; border: 0; border-radius: 0; flex-direction: column; }
+            :root .calibration-image-panel { position: relative; width: 100%; height: 50%; min-height: 0; flex: 0 0 50%; border: 0; border-bottom: 1px solid #475569; padding-top: var(--safe-area-top); }
+            :root .calibration-image-stage { min-height: 0; width: 100%; height: 100%; flex: 1; }
+            :root .calibration-settings-panel { width: 100%; height: auto; flex: 1; min-height: 0; }
+            :root .calibration-settings-panel > .absolute { position: fixed; z-index: 60; }
+            :root .calibration-settings-body { display: block; overflow-y: auto; overscroll-behavior-y: contain; -webkit-overflow-scrolling: touch; scrollbar-width: thin; scrollbar-color: #64748b #0f172a; }
+            :root .calibration-settings-scroll { overflow: visible; padding: 12px; }
+            :root .calibration-header { padding: 8px 12px; flex-wrap: nowrap; }
+            :root .calibration-header h2 { font-size: 15px; }
+            :root .calibration-header-actions { flex-wrap: nowrap; }
+            :root .calibration-header-actions > button { min-height: 44px; }
+            :root .calibration-header-actions > button:last-child { display: none; }
+            :root .calibration-mode-tabs { padding: 8px 12px; }
+            :root .calibration-mode-tabs button { min-height: 44px; font-size: 12px; }
+            :root .calibration-mode-tabs svg { flex-shrink: 0; }
+            :root .calibration-footer { padding: 8px 12px max(8px, var(--safe-area-bottom)); }
+            :root .calibration-footer button { width: 100%; min-height: 44px; }
+            :root .calibration-image-controls { padding: 10px; max-height: none; overflow: visible; gap: 10px; }
+            :root .calibration-toolbar-row { flex-direction: column; gap: 10px; }
+            :root .calibration-zoom-controls { display: none; }
+            :root .calibration-opacity { width: 100%; }
+            :root .calibration-opacity input { flex: 1; min-width: 0; }
+            :root .calibration-mobile-imagebar { position: absolute; inset: 0; pointer-events: none; z-index: 25; }
+            :root .calibration-mobile-hint { position: absolute; left: max(12px, var(--safe-area-left)); bottom: 10px; color: #e2e8f0; background: #0f172ae8; padding: 6px 9px; border-radius: 8px; font-size: 11px; }
+            :root .calibration-mobile-zoom { position: absolute; left: max(10px, var(--safe-area-left)); top: max(10px, var(--safe-area-top)); display: flex; background: #0f172ae8; border: 1px solid #475569; border-radius: 12px; pointer-events: auto; color: white; overflow: hidden; }
+            :root .calibration-mobile-zoom button { min-width: 44px; min-height: 44px; padding: 0 8px; font-size: 20px; touch-action: manipulation; }
+            :root .calibration-mobile-zoom button:nth-child(2) { font-size: 12px; font-variant-numeric: tabular-nums; }
+            :root .calibration-mobile-close { position: absolute; right: max(10px, var(--safe-area-right)); top: max(10px, var(--safe-area-top)); width: 44px; height: 44px; font-size: 26px; color: white; background: #0f172ae8; border: 1px solid #475569; border-radius: 12px; pointer-events: auto; }
+            :root .calibration-settings-panel input[type=range] { min-height: 44px; }
+            :root .calibration-settings-panel input[type=range]::-webkit-slider-thumb { width: 24px; height: 24px; margin-top: -10px; }
+            :root .calibration-settings-panel input[type=range].settings-slider::-webkit-slider-thumb,
+            :root .calibration-settings-panel input[type=range].dual-range-input::-webkit-slider-thumb { margin-top: -9px; }
+            :root .calibration-settings-panel input[type=range]::-moz-range-thumb { width: 24px; height: 24px; }
+            :root .calibration-settings-panel .dual-range-control { height: 44px; }
+            :root .calibration-settings-panel .dual-range-track { top: 18px; }
+            :root .calibration-settings-panel select,
+            :root .calibration-settings-panel input[type=number] { font-size: 16px; min-height: 40px; }
             /* 3-Phasen-Assistent: etwas mehr Platz für die Regler, Hinweise ans Kartenende, Navigation über die Schrittleiste. */
-            .calibration-shell.is-two-phase .calibration-image-panel { height: 42%; flex-basis: 42%; }
-            .two-phase-step-header { display: none; }
-            .two-phase-step-card { padding: 10px; }
-            .two-phase-step-body .two-phase-hint { order: 10; }
-            .two-phase-step-nav { display: none; }
-            .two-phase-fine-row { margin-top: 0; }
-            .two-phase-fine-row input[type=range] { min-height: 34px; }
+            :root .calibration-shell.is-two-phase .calibration-image-panel { height: 42%; flex-basis: 42%; }
+            :root .two-phase-step-header { display: none; }
+            :root .two-phase-step-card { padding: 10px; }
+            :root .two-phase-step-body .two-phase-hint { order: 10; }
+            :root .two-phase-step-nav { display: none; }
+            :root .two-phase-fine-row { margin-top: 0; }
+            :root .two-phase-fine-row input[type=range] { min-height: 34px; }
         }
 
         /* 3-Phasen-Assistent */
